@@ -1,0 +1,153 @@
+{
+  "name": "smartcoder",
+  "displayName": "SmartCoder",
+  "publisher": "smartcoder",
+  "description": "智能编程教学平台",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.106.1"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onUri",
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "uriHandler": true
+  },
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "smart-coder-sidebar",
+          "title": "SmartCoder",
+          "icon": "$(robot)"
+        }
+      ]
+    },
+    "views": {
+      "smart-coder-sidebar": [
+        {
+          "type": "webview",
+          "id": "smartCoderView",
+          "name": "AI 助手",
+          "visibility": "visible"
+        },
+        {
+          "type": "tree",
+          "id": "smartcoder-diagnostics",
+          "name": "当前文件健康诊断",
+          "visibility": "visible"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "smartcoder.start",
+        "title": "SmartCoder: 询问 AI (添加到对话)"
+      },
+      {
+        "command": "smartcoder.analyzeTerminal",
+        "title": "SmartCoder: 分析运行时错误"
+      },
+      {
+        "command": "smartcoder.fixDiagnostic",
+        "title": "AI 修复",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "smartcoder.generateUnitTest",
+        "title": "生成单元测试",
+        "icon": "$(beaker)"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "when": "editorHasSelection && editorLangId == csharp",
+          "command": "smartcoder.generateUnitTest",
+          "group": "navigation@1"
+        },
+        {
+          "when": "editorHasSelection",
+          "command": "smartcoder.start",
+          "group": "navigation"
+        }
+      ],
+      "terminal/context": [
+        {
+          "command": "smartcoder.analyzeTerminal",
+          "group": "navigation@1"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "smartcoder.fixDiagnostic",
+          "when": "view == smartcoder-diagnostics",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "smartcoder.fixDiagnostic",
+          "when": "view == smartcoder-diagnostics && viewItem == diagnostic",
+          "group": "inline"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "smartcoder.start",
+        "key": "shift+a",
+        "mac": "cmd+shift+l",
+        "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "smartcoder.analyzeTerminal",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "terminalFocus"
+      }
+    ],
+    "configuration": {
+      "title": "SmartCoder 设置",
+      "properties": {
+        "smartcoder.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "DeepSeek API Key"
+        },
+        "smartcoder.systemPrompt": {
+          "type": "string",
+          "default": "你是精通C#的助手。请用Markdown回答。",
+          "description": "System Prompt"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/vscode": "^1.106.1",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.39.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.3"
+  },
+  "dependencies": {
+    "axios": "^1.13.2",
+    "cheerio": "^1.1.2"
+  }
+}

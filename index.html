@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartCoder 智能教学平台</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            font-family: 'Segoe UI', sans-serif; 
+            background: #f5f5f5; 
+            color: #333; 
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .header {
+            background: white;
+            padding: 15px 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border-bottom: 2px solid #0078d4;
+        }
+        
+        h1 { 
+            color: #0078d4; 
+            font-size: 24px;
+        }
+
+        .main-container {
+            flex: 1;
+            display: flex;
+            gap: 15px;
+            padding: 15px;
+            overflow: hidden;
+        }
+
+        .left-panel {
+            width: 45%;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .right-panel {
+            width: 55%;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .card { 
+            background: white; 
+            padding: 20px; 
+            border-radius: 8px; 
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .card h2 { 
+            margin-bottom: 15px; 
+            color: #0078d4;
+            font-size: 18px;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 10px;
+        }
+
+        /* 知识点输入区 */
+        .knowledge-input-area {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .knowledge-input-area input {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 4px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .knowledge-input-area input:focus {
+            border-color: #0078d4;
+        }
+
+        .knowledge-input-area button {
+            padding: 10px 20px;
+            background: #0078d4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s;
+            white-space: nowrap;
+        }
+
+        .knowledge-input-area button:hover {
+            background: #005a9e;
+        }
+
+        .knowledge-input-area button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        /* 题目卡片 */
+        .problem-card {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .problem-title {
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .problem-id {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 15px;
+        }
+
+        .problem-description {
+            line-height: 1.6;
+            color: #444;
+            margin-bottom: 15px;
+            white-space: pre-wrap;
+        }
+
+        .problem-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: auto;
+            padding-top: 15px;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        button { 
+            background: #0078d4; 
+            color: white; 
+            border: none; 
+            padding: 10px 20px; 
+            border-radius: 4px; 
+            cursor: pointer; 
+            font-size: 14px; 
+            transition: 0.3s; 
+        }
+        button:hover { background: #005a9e; }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        /* 状态指示灯 */
+        .status-bar { 
+            margin-top: 10px; 
+            padding: 10px; 
+            border-radius: 4px; 
+            background: #e0e0e0; 
+            font-size: 12px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+        }
+        .dot { 
+            width: 10px; 
+            height: 10px; 
+            border-radius: 50%; 
+            background: #ccc; 
+            display: inline-block; 
+            margin-right: 5px; 
+        }
+        .dot.active { 
+            background: #28a745; 
+            box-shadow: 0 0 5px #28a745; 
+            animation: pulse 1s infinite; 
+        }
+        
+        @keyframes pulse { 
+            0% { opacity: 1; } 
+            50% { opacity: 0.5; } 
+            100% { opacity: 1; } 
+        }
+
+        /* 聊天区域 */
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            background: #fafafa;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .message {
+            padding: 12px 15px;
+            border-radius: 8px;
+            max-width: 80%;
+            word-wrap: break-word;
+            line-height: 1.5;
+        }
+
+        .message.user {
+            background: #0078d4;
+            color: white;
+            align-self: flex-end;
+            margin-left: auto;
+        }
+
+        .message.ai {
+            background: white;
+            color: #333;
+            border: 1px solid #e0e0e0;
+            align-self: flex-start;
+        }
+
+        .message.system {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffc107;
+            align-self: center;
+            max-width: 90%;
+            font-size: 12px;
+        }
+
+        .chat-input-area {
+            display: flex;
+            gap: 10px;
+        }
+
+        .chat-input-area textarea {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 4px;
+            font-size: 14px;
+            resize: none;
+            outline: none;
+            font-family: inherit;
+            transition: border-color 0.3s;
+            min-height: 60px;
+            max-height: 120px;
+        }
+
+        .chat-input-area textarea:focus {
+            border-color: #0078d4;
+        }
+
+        .chat-input-area button {
+            padding: 10px 20px;
+            align-self: flex-end;
+        }
+
+        /* 代码预览 */
+        .code-preview { 
+            background: #1e1e1e; 
+            color: #d4d4d4; 
+            padding: 10px; 
+            border-radius: 4px; 
+            font-family: 'Consolas', 'Monaco', monospace; 
+            font-size: 12px; 
+            max-height: 150px; 
+            overflow: auto; 
+            margin-top: 10px; 
+            display: none;
+            border: 1px solid #333;
+        }
+
+        .loading {
+            color: #0078d4;
+            font-style: italic;
+        }
+
+        /* 响应式 */
+        @media (max-width: 1200px) {
+            .main-container {
+                flex-direction: column;
+            }
+            .left-panel, .right-panel {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎓 SmartCoder 智能编程教学平台</h1>
+    </div>
+
+    <div class="main-container">
+        <!-- 左侧面板：题目区 -->
+        <div class="left-panel">
+            <!-- 知识点输入卡片 -->
+            <div class="card">
+                <h2>📚 我想学习</h2>
+                <div class="knowledge-input-area">
+                    <input 
+                        type="text" 
+                        id="knowledgeInput" 
+                        placeholder="输入知识点或想学的内容，例如：数组、排序算法、动态规划..."
+                        onkeypress="if(event.key==='Enter') generateProblem()"
+                    />
+                    <button id="generateBtn" onclick="generateProblem()">🎲 AI 出题</button>
+                </div>
+            </div>
+
+            <!-- 题目卡片 -->
+            <div class="card problem-card">
+                <div class="problem-title" id="problemTitle">等待出题...</div>
+                <div class="problem-id" id="problemId"></div>
+                <div class="problem-description" id="problemDescription">
+                    请输入你想学习的知识点，然后点击"AI 出题"按钮，AI 会为你生成相应的编程题目。
+                </div>
+                <div class="problem-actions">
+                    <button id="openVsCodeBtn" onclick="openVsCode()" disabled>🚀 在 VS Code 中编程</button>
+                    <button onclick="generateProblem()">🔄 换一题</button>
+                </div>
+                <div class="status-bar">
+                    <span><span id="sync-dot" class="dot"></span> 云端同步</span>
+                    <span id="last-update">等待连接...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧面板：AI 互动区 -->
+        <div class="right-panel">
+            <div class="card chat-area">
+                <h2>💬 AI 教学助手</h2>
+                
+                <div class="chat-messages" id="chatMessages">
+                    <div class="message system">
+                        👋 你好！我是你的 AI 编程导师。你可以：
+                        <br>• 输入知识点，让我为你出题
+                        <br>• 提交代码后，我会给你详细反馈
+                        <br>• 随时向我提问
+                    </div>
+                </div>
+
+                <div id="code-preview" class="code-preview"></div>
+
+                <div class="chat-input-area">
+                    <textarea 
+                        id="chatInput" 
+                        placeholder="输入你的问题或想说的话... (Enter发送，Shift+Enter换行)"
+                        onkeydown="handleChatKeyDown(event)"
+                    ></textarea>
+                    <button onclick="sendChatMessage()">发送</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // === 配置区 ===
+        const DEEPSEEK_KEY = "sk-3190a966238e41199f5c7c4ad61f490b";
+        const EXTENSION_ID = "smartcoder.smartcoder";
+
+        let lastTimestamp = 0;
+        let currentProblem = null;
+        let chatHistory = [];
+
+        // === 知识点输入和AI出题 ===
+        async function generateProblem() {
+            const knowledge = document.getElementById('knowledgeInput').value.trim();
+            if (!knowledge) {
+                addChatMessage('system', '请输入你想学习的知识点！');
+                return;
+            }
+
+            const generateBtn = document.getElementById('generateBtn');
+            generateBtn.disabled = true;
+            generateBtn.textContent = '⏳ 正在出题...';
+
+            addChatMessage('user', `我想学习：${knowledge}`);
+
+            const prompt = `请为学生学习以下知识点生成一道编程题目。
+
+知识点：${knowledge}
+
+要求：
+1. 生成一道适合初学者的编程题目
+2. 题目应该涵盖该知识点
+3. 提供清晰的题目描述（包括输入输出格式）
+4. 题目难度适中
+
+⚠️ 重要：必须且只能返回纯 JSON 格式，不要使用 markdown 代码块，不要添加任何其他文字。
+格式：
+{
+  "title": "题目名称",
+  "id": 101,
+  "description": "题目详细描述（支持换行\\n）",
+  "difficulty": "简单"
+}`;
+
+            try {
+                // 使用 JSON 模式调用 AI
+                const response = await callAIAPI(prompt, true);
+                
+                // 清理可能的 markdown 代码块
+                let jsonStr = response.trim();
+                
+                // 移除 ```json 和 ``` 标记
+                jsonStr = jsonStr.replace(/^```json\s*/i, '');
+                jsonStr = jsonStr.replace(/^```\s*/, '');
+                jsonStr = jsonStr.replace(/\s*```$/g, '');
+                jsonStr = jsonStr.trim();
+                
+                // 尝试提取 JSON 对象（如果 AI 在 JSON 前后添加了文字）
+                const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    jsonStr = jsonMatch[0];
+                }
+                
+                const problemData = JSON.parse(jsonStr);
+                
+                // 验证必要字段
+                if (!problemData.title || !problemData.id) {
+                    throw new Error('题目数据不完整');
+                }
+                
+                // 更新题目卡片
+                currentProblem = problemData;
+                document.getElementById('problemTitle').textContent = `题目 ${problemData.id}: ${problemData.title}`;
+                document.getElementById('problemId').textContent = `难度：${problemData.difficulty || '中等'} | ID: ${problemData.id}`;
+                document.getElementById('problemDescription').textContent = problemData.description || '暂无描述';
+                document.getElementById('openVsCodeBtn').disabled = false;
+
+                addChatMessage('ai', `✅ 题目已生成！\n\n**${problemData.title}**\n\n${problemData.description}\n\n点击"在 VS Code 中编程"开始解题吧！`);
+
+            } catch (e) {
+                console.error("出题失败:", e);
+                addChatMessage('ai', `❌ 出题失败: ${e.message}\n\n请重试或换个知识点。如果多次失败，可以尝试更具体的知识点描述（例如："数组排序"而不是"数组"）。`);
+            } finally {
+                generateBtn.disabled = false;
+                generateBtn.textContent = '🎲 AI 出题';
+            }
+        }
+
+        // === VS Code 打开题目 ===
+        function openVsCode() {
+            if (!currentProblem) {
+                addChatMessage('system', '请先生成题目！');
+                return;
+            }
+
+            const title = encodeURIComponent(currentProblem.title);
+            const desc = encodeURIComponent(currentProblem.description);
+            window.location.href = `vscode://${EXTENSION_ID}/solve?id=${currentProblem.id}&title=${title}&desc=${desc}`;
+            
+            addChatMessage('system', '正在打开 VS Code...');
+        }
+
+        // === 聊天功能 ===
+        function handleChatKeyDown(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendChatMessage();
+            }
+        }
+
+        async function sendChatMessage() {
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            
+            if (!message) return;
+
+            addChatMessage('user', message);
+            input.value = '';
+
+            // 显示加载状态
+            const loadingId = addChatMessage('ai', '🤔 思考中...', true);
+
+            try {
+                const response = await callAIAPI(message);
+                updateChatMessage(loadingId, response);
+            } catch (e) {
+                console.error("AI 回复失败:", e);
+                updateChatMessage(loadingId, `❌ 抱歉，我遇到了一个问题：${e.message}`);
+            }
+        }
+
+        function addChatMessage(role, content, isTemp = false) {
+            const messagesDiv = document.getElementById('chatMessages');
+            const messageDiv = document.createElement('div');
+            const messageId = 'msg-' + Date.now() + '-' + Math.random();
+            messageDiv.id = messageId;
+            messageDiv.className = `message ${role}`;
+            messageDiv.textContent = content;
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            if (isTemp) {
+                messageDiv.classList.add('loading');
+            }
+
+            return messageId;
+        }
+
+        function updateChatMessage(messageId, newContent) {
+            const messageDiv = document.getElementById(messageId);
+            if (messageDiv) {
+                messageDiv.classList.remove('loading');
+                messageDiv.textContent = newContent;
+                // 支持 Markdown 简单格式（可选）
+                messageDiv.innerHTML = newContent.replace(/\n/g, '<br>');
+            }
+        }
+
+        // === 代码提交处理 ===
+        async function handleNewSubmission(data) {
+            document.getElementById('sync-dot').classList.add('active');
+            document.getElementById('last-update').textContent = '收到新代码: ' + new Date().toLocaleTimeString();
+            
+            const preview = document.getElementById('code-preview');
+            preview.style.display = 'block';
+            preview.textContent = data.code;
+
+            addChatMessage('system', '📥 收到代码提交，正在分析...');
+
+            await fetch('http://localhost:3000/api/mark_read', { method: 'POST' });
+
+            const loadingId = addChatMessage('ai', '🤔 正在分析你的代码...', true);
+
+            try {
+                const prompt = `你是一个苏格拉底式的编程导师。学生提交了代码。
+请不要直接给出正确答案。
+你需要：
+1. 分析代码逻辑。
+2. 如果代码有错，用引导性的问题启发学生（例如："你考虑过数组为空的情况吗？"）。
+3. 如果代码是对的，提出优化问题（例如："现在的复杂度是O(n^2)，能优化到O(n)吗？"）。
+
+学生代码：
+${data.code}
+
+当前题目：${currentProblem ? currentProblem.title : '未知'}`;
+
+                const feedback = await callAIAPI(prompt);
+                updateChatMessage(loadingId, feedback);
+            } catch (e) {
+                console.error("分析失败:", e);
+                updateChatMessage(loadingId, `❌ 分析失败: ${e.message}`);
+            } finally {
+                document.getElementById('sync-dot').classList.remove('active');
+            }
+        }
+
+        // === AI API 调用 ===
+        async function callAIAPI(prompt, useJsonMode = false) {
+            if (!DEEPSEEK_KEY || DEEPSEEK_KEY === "sk-你的key" || DEEPSEEK_KEY.trim() === "") {
+                throw new Error("请先配置 DEEPSEEK_KEY");
+            }
+
+            const apiKey = String(DEEPSEEK_KEY).trim();
+            const headers = new Headers();
+            headers.append("Content-Type", "application/json; charset=UTF-8");
+            headers.append("Authorization", "Bearer " + apiKey);
+
+            const requestBody = {
+                model: "deepseek-chat",
+                messages: [
+                    ...chatHistory,
+                    { role: "user", content: prompt }
+                ],
+                stream: false
+            };
+
+            // 如果要求 JSON 格式，使用 response_format
+            if (useJsonMode) {
+                requestBody.response_format = { type: "json_object" };
+                // 添加系统提示确保返回 JSON
+                requestBody.messages.unshift({
+                    role: "system",
+                    content: "你是一个编程题目生成器。必须且只能返回有效的 JSON 格式，不要使用 markdown 代码块包裹，不要添加任何解释文字。"
+                });
+            }
+
+            const response = await fetch("https://api.deepseek.com/chat/completions", {
+                method: "POST",
+                headers: headers,
+                body: JSON.stringify(requestBody)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ message: response.statusText }));
+                throw new Error(errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const json = await response.json();
+            const content = json.choices[0].message.content;
+            
+            // 更新聊天历史（只保留最近5轮对话）
+            chatHistory.push({ role: "user", content: prompt });
+            chatHistory.push({ role: "assistant", content: content });
+            if (chatHistory.length > 10) {
+                chatHistory = chatHistory.slice(-10);
+            }
+
+            return content;
+        }
+
+        // === 轮询后端 ===
+        setInterval(async () => {
+            try {
+                const res = await fetch('http://localhost:3000/api/check');
+                const data = await res.json();
+
+                if (data && data.status === 'pending' && data.timestamp > lastTimestamp) {
+                    lastTimestamp = data.timestamp;
+                    handleNewSubmission(data);
+                }
+            } catch (e) {
+                console.error("连接服务器失败", e);
+            }
+        }, 1000);
+    </script>
+</body>
+</html>
