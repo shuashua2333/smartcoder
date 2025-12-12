@@ -2,6 +2,12 @@ import * as vscode from 'vscode';
 import axios from 'axios';      // 引入网络库
 import * as cheerio from 'cheerio'; // 引入 HTML 解析库
 import * as path from 'path';   // 引入路径处理库
+import * as fs from 'fs';       // 引入文件系统库
+import * as os from 'os';       // 引入操作系统库
+import { exec, spawn } from 'child_process';  // 引入子进程库
+import { promisify } from 'util';  // 引入工具函数
+
+const execAsync = promisify(exec);
 
 // === 差异视图内容提供者 ===
 class DiffContentProvider implements vscode.TextDocumentContentProvider {
@@ -310,7 +316,236 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    // 🔥 发送代码给后端 Server
+    // 🔥 本地运行代码并获取性能数据（类似 LeetCode 评测）
+    private async _runCodeLocally(code: string): Promise<{ output: string; runtime: number; memory: number } | null> {
+        const tempDir = path.join(os.tmpdir(), `smartcoder-${Date.now()}-${Math.random().toString(36).substring(7)}`);
+        const projectDir = path.join(tempDir, 'CodeProject');
+        
+        try {
+            // 1. 创建临时目录
+            fs.mkdirSync(projectDir, { recursive: true });
+
+            // 2. 创建 .csproj 文件
+            const csprojContent = `<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>`;
+
+            fs.writeFileSync(path.join(projectDir, 'CodeProject.csproj'), csprojContent);
+
+            // 3. 智能提取用户代码并包装
+            // 检测用户代码结构，提取核心代码片段
+            let userCodeSnippet = code;
+            
+            // 检测是否包含 Main 方法
+            const mainMethodRegex = /static\s+(void|int)\s+Main\s*\([^)]*\)\s*\{/i;
+            const mainMatch = code.match(mainMethodRegex);
+            
+            if (mainMatch) {
+                // 如果包含 Main 方法，提取 Main 方法内部的代码
+                const mainStartIndex = mainMatch.index! + mainMatch[0].length;
+                
+                // 找到匹配的右大括号（Main 方法结束）
+                let braceCount = 1;
+                let mainEndIndex = mainStartIndex;
+                
+                for (let i = mainStartIndex; i < code.length; i++) {
+                    if (code[i] === '{') braceCount++;
+                    if (code[i] === '}') {
+                        braceCount--;
+                        if (braceCount === 0) {
+                            mainEndIndex = i;
+                            break;
+                        }
+                    }
+                }
+                
+                // 提取 Main 方法内部的代码
+                if (mainEndIndex > mainStartIndex) {
+                    userCodeSnippet = code.substring(mainStartIndex, mainEndIndex).trim();
+                }
+            } else {
+                // 检测是否包含完整的类定义
+                const classRegex = /class\s+\w+\s*\{/i;
+                const classMatch = code.match(classRegex);
+                
+                if (classMatch) {
+                    // 如果包含类定义，提取类内部的代码
+                    const classStartIndex = classMatch.index! + classMatch[0].length;
+                    
+                    // 找到匹配的右大括号（类结束）
+                    let braceCount = 1;
+                    let classEndIndex = classStartIndex;
+                    
+                    for (let i = classStartIndex; i < code.length; i++) {
+                        if (code[i] === '{') braceCount++;
+                        if (code[i] === '}') {
+                            braceCount--;
+                            if (braceCount === 0) {
+                                classEndIndex = i;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // 提取类内部的代码
+                    if (classEndIndex > classStartIndex) {
+                        userCodeSnippet = code.substring(classStartIndex, classEndIndex).trim();
+                    }
+                }
+            }
+            
+            // 如果提取的代码为空，使用原始代码
+            if (!userCodeSnippet || userCodeSnippet.trim() === '') {
+                userCodeSnippet = code;
+            }
+            
+            // 包装代码，添加性能监控
+            const wrappedCode = `using System;
+using System.Diagnostics;
+
+class Program
+{
+    static void Main()
+    {
+        var sw = Stopwatch.StartNew();
+        long memoryBefore = GC.GetTotalMemory(false);
+        
+        try
+        {
+            // ========== 用户代码开始 ==========
+${userCodeSnippet}
+            // ========== 用户代码结束 ==========
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("EXCEPTION: " + ex.ToString());
+        }
+        finally
+        {
+            sw.Stop();
+            long memoryAfter = GC.GetTotalMemory(false);
+            long memoryUsed = Math.Max(0, memoryAfter - memoryBefore);
+            
+            // 输出性能数据（使用特殊标记，方便解析）
+            Console.WriteLine("\\n===SMARTCODER_PERF_START===");
+            Console.WriteLine($"RUNTIME_MS:{sw.ElapsedMilliseconds}");
+            Console.WriteLine($"MEMORY_BYTES:{memoryUsed}");
+            Console.WriteLine("===SMARTCODER_PERF_END===");
+        }
+    }
+}`;
+
+            // 4. 写入 Program.cs
+            fs.writeFileSync(path.join(projectDir, 'Program.cs'), wrappedCode, 'utf8');
+
+            // 5. 先检查 dotnet 是否可用
+            try {
+                await execAsync('dotnet --version', { timeout: 5000 });
+            } catch (checkError) {
+                throw new Error('dotnet command not found. Please install .NET SDK from https://dotnet.microsoft.com/download');
+            }
+
+            // 6. 先构建项目，再运行
+            const command = process.platform === 'win32' ? 'dotnet' : 'dotnet';
+            
+            // 先构建（这会自动编译代码）
+            try {
+                await execAsync(`${command} build`, {
+                    cwd: projectDir,
+                    timeout: 30000,
+                    maxBuffer: 1024 * 1024 * 10
+                });
+            } catch (buildError: any) {
+                // 构建失败，返回构建错误信息
+                const buildOutput = buildError.stdout || buildError.stderr || buildError.message;
+                throw new Error(`编译失败：\n${buildOutput}`);
+            }
+            
+            // 构建成功后运行
+            const runResult = await execAsync(`${command} run`, {
+                cwd: projectDir,
+                timeout: 30000, // 30秒超时
+                maxBuffer: 1024 * 1024 * 10 // 10MB 缓冲区
+            });
+
+            const stdout = runResult.stdout || '';
+            const stderr = runResult.stderr || '';
+
+            // 6. 解析输出，提取性能数据
+            const perfStart = stdout.indexOf('===SMARTCODER_PERF_START===');
+            const perfEnd = stdout.indexOf('===SMARTCODER_PERF_END===');
+
+            let output = stdout;
+            let runtime = 0;
+            let memory = 0;
+
+            if (perfStart !== -1 && perfEnd !== -1) {
+                // 提取实际输出（性能数据之前的部分）
+                output = stdout.substring(0, perfStart).trim();
+                
+                // 提取性能数据
+                const perfSection = stdout.substring(perfStart, perfEnd);
+                const runtimeMatch = perfSection.match(/RUNTIME_MS:(\d+)/);
+                const memoryMatch = perfSection.match(/MEMORY_BYTES:(\d+)/);
+
+                if (runtimeMatch) {
+                    runtime = parseInt(runtimeMatch[1], 10);
+                }
+                if (memoryMatch) {
+                    memory = parseInt(memoryMatch[1], 10);
+                }
+            }
+
+            // 如果有 stderr，附加到输出
+            if (stderr && !stderr.includes('Build succeeded')) {
+                output += (output ? '\n' : '') + stderr;
+            }
+
+            return { output, runtime, memory };
+
+        } catch (error: any) {
+            // 如果运行失败，返回详细的错误信息
+            let errorOutput = '';
+            
+            // 检查是否是 .NET SDK 未安装
+            if (error.message && (error.message.includes('dotnet') || error.message.includes('not found') || error.message.includes('不是内部或外部命令'))) {
+                errorOutput = '❌ 错误：未检测到 .NET SDK\n\n请先安装 .NET SDK：\n1. 访问 https://dotnet.microsoft.com/download\n2. 下载并安装 .NET SDK 6.0 或更高版本\n3. 安装后运行 "dotnet --version" 验证';
+            } else if (error.stdout) {
+                // 如果有 stdout，可能是编译错误
+                errorOutput = `编译/运行错误：\n${error.stdout}`;
+                if (error.stderr) {
+                    errorOutput += `\n${error.stderr}`;
+                }
+            } else if (error.stderr) {
+                errorOutput = `错误：\n${error.stderr}`;
+            } else {
+                errorOutput = `代码运行失败：${error.message || '未知错误'}`;
+            }
+            
+            return { 
+                output: errorOutput, 
+                runtime: -1, 
+                memory: -1 
+            };
+        } finally {
+            // 7. 清理临时目录
+            try {
+                if (fs.existsSync(tempDir)) {
+                    fs.rmSync(tempDir, { recursive: true, force: true });
+                }
+            } catch (cleanupError) {
+                // 清理失败不影响主流程，只记录错误
+                console.error('清理临时目录失败:', cleanupError);
+            }
+        }
+    }
+
+    // 🔥 发送代码给后端 Server（已添加性能评测）
     private async _submitToCloud() {
         if (!this._view) return;
         
@@ -323,13 +558,59 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        this._view.webview.postMessage({ type: 'addUserMessage', value: "☁️ 正在提交到云端..." });
+        this._view.webview.postMessage({ type: 'addUserMessage', value: "⚡ 正在本地运行代码并评测性能..." });
 
         try {
-            // 发送给后端服务器
+            // 1. 先在本地运行代码，获取性能数据
+            const perfData = await this._runCodeLocally(code);
+
+            if (!perfData) {
+                throw new Error("本地运行失败");
+            }
+
+            // 2. 显示性能数据和运行结果
+            let perfInfo = '';
+            let statusIcon = '✅';
+            
+            if (perfData.runtime >= 0 && perfData.memory >= 0) {
+                // 成功获取性能数据
+                perfInfo = `\n\n⚡ **性能数据**\n- 运行时间: ${perfData.runtime}ms\n- 内存使用: ${(perfData.memory / 1024).toFixed(2)}KB`;
+                if (perfData.output) {
+                    perfInfo += `\n\n📤 **程序输出:**\n\`\`\`\n${perfData.output}\n\`\`\``;
+                }
+            } else {
+                // 性能数据获取失败
+                statusIcon = '⚠️';
+                perfInfo = `\n\n⚠️ **性能数据获取失败**`;
+                
+                // 显示错误信息
+                if (perfData.output) {
+                    perfInfo += `\n\n❌ **错误信息:**\n\`\`\`\n${perfData.output}\n\`\`\``;
+                    
+                    // 检查是否是 .NET SDK 问题
+                    if (perfData.output.includes('.NET SDK') || perfData.output.includes('dotnet')) {
+                        perfInfo += `\n\n💡 **解决方案:**\n请安装 .NET SDK：\n1. 访问 https://dotnet.microsoft.com/download\n2. 下载并安装 .NET SDK 6.0 或更高版本\n3. 重启 VS Code`;
+                    }
+                } else {
+                    perfInfo += `\n\n可能的原因：\n- .NET SDK 未安装\n- 代码编译失败\n- 代码运行超时（30秒）`;
+                }
+            }
+
+            this._view.webview.postMessage({ 
+                type: 'addAiMessage', 
+                data: { 
+                    analysis: `${statusIcon} **本地运行完成**${perfInfo}\n\n📤 正在提交到云端...`, 
+                    code: null 
+                } 
+            });
+
+            // 3. 发送给后端服务器（包含性能数据）
             const response = await axios.post('http://localhost:3000/api/submit', {
                 problemId: this._currentProblemId || "Unknown",
                 code: code,
+                output: perfData.output,
+                runtime: perfData.runtime,
+                memory: perfData.memory,
                 timestamp: Date.now()
             });
             
@@ -340,10 +621,11 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
             vscode.window.showInformationMessage("提交成功！请查看网页端反馈。");
             
         } catch (e: any) {
-            vscode.window.showErrorMessage("连接云端失败: " + (e.message || "请确保后端服务器已启动 (http://localhost:3000)"));
+            const errorMsg = e.message || "请确保后端服务器已启动 (http://localhost:3000)";
+            vscode.window.showErrorMessage("连接云端失败: " + errorMsg);
             this._view.webview.postMessage({ 
                 type: 'addAiMessage', 
-                data: { analysis: "❌ 提交失败，请检查 Node 服务器是否启动在 http://localhost:3000", code: null } 
+                data: { analysis: `❌ 提交失败: ${errorMsg}\n\n请检查：\n1. Node 服务器是否启动在 http://localhost:3000\n2. 是否已安装 .NET SDK (dotnet --version)`, code: null } 
             });
         }
     }

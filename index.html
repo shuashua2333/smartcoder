@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SmartCoder 智能教学平台</title>
+    <!-- ECharts CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { 
@@ -289,6 +291,104 @@
             font-style: italic;
         }
 
+        /* LeetCode 风格的结果展示 */
+        .result-container {
+            background: #1e1e1e;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            display: none;
+            max-height: 30vh;
+            overflow-y: auto;
+        }
+
+        .result-banner {
+            padding: 10px 15px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .result-banner.accepted {
+            background: #0d5635;
+            color: #4ade80;
+            border: 1px solid #22c55e;
+        }
+
+        .result-banner.error {
+            background: #7f1d1d;
+            color: #f87171;
+            border: 1px solid #ef4444;
+        }
+
+        .metrics-container {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 12px;
+            padding: 12px;
+            background: #252526;
+            border-radius: 6px;
+        }
+
+        .metric-item {
+            flex: 1;
+        }
+
+        .metric-label {
+            font-size: 11px;
+            color: #858585;
+            margin-bottom: 4px;
+        }
+
+        .metric-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: #ffffff;
+        }
+
+        .metric-unit {
+            font-size: 14px;
+            color: #858585;
+            margin-left: 4px;
+        }
+
+        .beat-percentage {
+            font-size: 12px;
+            color: #4ade80;
+            margin-top: 4px;
+        }
+
+        .charts-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 0;
+        }
+
+        .chart-container {
+            flex: 1;
+            background: #252526;
+            border-radius: 6px;
+            padding: 15px;
+            min-width: 0; /* 确保 flex 子元素可以正确收缩 */
+        }
+
+        .chart-title {
+            color: #ffffff;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+
+        #runtimeChart, #memoryChart {
+            width: 100% !important;
+            height: 300px !important;
+            min-width: 0;
+        }
+
         /* 响应式 */
         @media (max-width: 1200px) {
             .main-container {
@@ -296,6 +396,16 @@
             }
             .left-panel, .right-panel {
                 width: 100%;
+            }
+            .metrics-container {
+                flex-direction: column;
+                gap: 15px;
+            }
+            .charts-row {
+                flex-direction: column;
+            }
+            .result-container {
+                max-height: none;
             }
         }
     </style>
@@ -340,8 +450,47 @@
             </div>
         </div>
 
-        <!-- 右侧面板：AI 互动区 -->
+        <!-- 右侧面板：结果展示和 AI 互动区 -->
         <div class="right-panel">
+            <!-- LeetCode 风格的结果展示 -->
+            <div class="card result-container" id="resultContainer">
+                <div class="result-banner accepted" id="resultBanner">
+                    <span>✓</span>
+                    <span>Accepted</span>
+                </div>
+
+                <div class="metrics-container">
+                    <div class="metric-item">
+                        <div class="metric-label">运行时间</div>
+                        <div class="metric-value">
+                            <span id="runtimeValue">0</span>
+                            <span class="metric-unit">ms</span>
+                        </div>
+                        <div class="beat-percentage" id="runtimeBeatPct"></div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="metric-label">内存消耗</div>
+                        <div class="metric-value">
+                            <span id="memoryValue">0</span>
+                            <span class="metric-unit">MB</span>
+                        </div>
+                        <div class="beat-percentage" id="memoryBeatPct"></div>
+                    </div>
+                </div>
+
+                <div class="charts-row">
+                    <div class="chart-container">
+                        <div class="chart-title">运行时间分布</div>
+                        <div id="runtimeChart"></div>
+                    </div>
+
+                    <div class="chart-container">
+                        <div class="chart-title">内存使用分布</div>
+                        <div id="memoryChart"></div>
+                    </div>
+                </div>
+            </div>
+
             <div class="card chat-area">
                 <h2>💬 AI 教学助手</h2>
                 
@@ -376,6 +525,34 @@
         let lastTimestamp = 0;
         let currentProblem = null;
         let chatHistory = [];
+        let runtimeChart = null;
+        let memoryChart = null;
+
+        // 初始化图表
+        function initCharts() {
+            const runtimeChartEl = document.getElementById('runtimeChart');
+            const memoryChartEl = document.getElementById('memoryChart');
+            
+            if (runtimeChartEl) {
+                runtimeChart = echarts.init(runtimeChartEl);
+            }
+            if (memoryChartEl) {
+                memoryChart = echarts.init(memoryChartEl);
+            }
+            
+            // 监听窗口大小变化，确保图表自适应
+            window.addEventListener('resize', () => {
+                if (runtimeChart) {
+                    runtimeChart.resize();
+                }
+                if (memoryChart) {
+                    memoryChart.resize();
+                }
+            });
+        }
+
+        // 初始化图表
+        initCharts();
 
         // === 知识点输入和AI出题 ===
         async function generateProblem() {
@@ -525,7 +702,7 @@
             }
         }
 
-        // === 代码提交处理 ===
+        // === 代码提交处理（包含性能数据） ===
         async function handleNewSubmission(data) {
             document.getElementById('sync-dot').classList.add('active');
             document.getElementById('last-update').textContent = '收到新代码: ' + new Date().toLocaleTimeString();
@@ -534,23 +711,93 @@
             preview.style.display = 'block';
             preview.textContent = data.code;
 
-            addChatMessage('system', '📥 收到代码提交，正在分析...');
+            // 判断状态（Accepted 或 Error）
+            const isAccepted = data.runtime >= 0 && data.memory >= 0 && 
+                              (!data.output || !data.output.toLowerCase().includes('error') && !data.output.toLowerCase().includes('exception'));
+            
+            // 显示 LeetCode 风格的结果展示
+            const resultContainer = document.getElementById('resultContainer');
+            const resultBanner = document.getElementById('resultBanner');
+            
+            if (data.runtime >= 0 && data.memory >= 0) {
+                resultContainer.style.display = 'block';
+                
+                // 更新状态横幅
+                if (isAccepted) {
+                    resultBanner.className = 'result-banner accepted';
+                    resultBanner.innerHTML = '<span>✓</span><span>Accepted</span>';
+                } else {
+                    resultBanner.className = 'result-banner error';
+                    resultBanner.innerHTML = '<span>✗</span><span>Error</span>';
+                }
+                
+                // 更新核心指标
+                const runtimeValue = data.runtime;
+                const memoryValueMB = (data.memory / (1024 * 1024)).toFixed(2);
+                
+                document.getElementById('runtimeValue').textContent = runtimeValue;
+                document.getElementById('memoryValue').textContent = memoryValueMB;
+                
+                // 更新击败率
+                const runtimeBeatPctEl = document.getElementById('runtimeBeatPct');
+                const memoryBeatPctEl = document.getElementById('memoryBeatPct');
+                
+                if (data.beatRuntimePct !== null && data.beatRuntimePct !== undefined) {
+                    runtimeBeatPctEl.textContent = `击败了 ${data.beatRuntimePct}% 的用户`;
+                } else {
+                    runtimeBeatPctEl.textContent = '';
+                }
+                
+                if (data.beatMemoryPct !== null && data.beatMemoryPct !== undefined) {
+                    memoryBeatPctEl.textContent = `击败了 ${data.beatMemoryPct}% 的用户`;
+                } else {
+                    memoryBeatPctEl.textContent = '';
+                }
+                
+                // 渲染分布图表（需要从后端获取历史数据或模拟数据）
+                await renderDistributionCharts(data);
+            } else {
+                resultContainer.style.display = 'none';
+            }
+
+            // 在聊天中也显示简要信息
+            let perfInfo = '';
+            if (data.runtime >= 0 && data.memory >= 0) {
+                perfInfo = `\n\n⚡ **性能评测结果**\n- 运行时间: ${data.runtime}ms`;
+                if (data.beatRuntimePct !== null && data.beatRuntimePct !== undefined) {
+                    perfInfo += ` 🏆 **击败了 ${data.beatRuntimePct}% 的用户**`;
+                }
+                perfInfo += `\n- 内存使用: ${(data.memory / 1024).toFixed(2)}KB`;
+                if (data.beatMemoryPct !== null && data.beatMemoryPct !== undefined) {
+                    perfInfo += ` 🏆 **击败了 ${data.beatMemoryPct}% 的用户**`;
+                }
+                if (data.output) {
+                    perfInfo += `\n\n📤 **程序输出:**\n\`\`\`\n${data.output}\n\`\`\``;
+                }
+            }
+
+            addChatMessage('system', '📥 收到代码提交' + perfInfo);
 
             await fetch('http://localhost:3000/api/mark_read', { method: 'POST' });
 
-            const loadingId = addChatMessage('ai', '🤔 正在分析你的代码...', true);
+            const loadingId = addChatMessage('ai', '🤔 正在分析你的代码和性能数据...', true);
 
             try {
-                const prompt = `你是一个苏格拉底式的编程导师。学生提交了代码。
+                const prompt = `你是一个苏格拉底式的编程导师。学生提交了代码，并提供了性能评测数据和排名。
 请不要直接给出正确答案。
 你需要：
 1. 分析代码逻辑。
-2. 如果代码有错，用引导性的问题启发学生（例如："你考虑过数组为空的情况吗？"）。
-3. 如果代码是对的，提出优化问题（例如："现在的复杂度是O(n^2)，能优化到O(n)吗？"）。
+2. 分析性能数据（运行时间和内存使用），给出优化建议。
+3. 如果代码有错，用引导性的问题启发学生（例如："你考虑过数组为空的情况吗？"）。
+4. 如果代码是对的，提出优化问题（例如："现在的复杂度是O(n^2)，能优化到O(n)吗？"）。
+5. 如果提供了击败率数据，可以鼓励学生或提出改进建议。
 
 学生代码：
 ${data.code}
 
+${data.output ? `程序输出：\n${data.output}\n` : ''}
+${data.runtime >= 0 ? `运行时间：${data.runtime}ms${data.beatRuntimePct !== null && data.beatRuntimePct !== undefined ? ` (击败了 ${data.beatRuntimePct}% 的用户)` : ''}\n` : ''}
+${data.memory >= 0 ? `内存使用：${(data.memory / 1024).toFixed(2)}KB${data.beatMemoryPct !== null && data.beatMemoryPct !== undefined ? ` (击败了 ${data.beatMemoryPct}% 的用户)` : ''}\n` : ''}
 当前题目：${currentProblem ? currentProblem.title : '未知'}`;
 
                 const feedback = await callAIAPI(prompt);
@@ -561,6 +808,236 @@ ${data.code}
             } finally {
                 document.getElementById('sync-dot').classList.remove('active');
             }
+        }
+
+        // === 渲染分布图表 ===
+        async function renderDistributionCharts(currentData) {
+            try {
+                // 从后端获取真实的分布数据
+                const stats = await fetch('http://localhost:3000/api/stats').then(r => r.json()).catch(() => null);
+                
+                const runtimeValues = stats && stats.runtimeDistribution ? stats.runtimeDistribution : [];
+                const memoryValuesMB = stats && stats.memoryDistribution ? stats.memoryDistribution : [];
+                
+                // 如果有历史数据，使用真实数据；否则使用模拟数据
+                if (runtimeValues.length === 0 && memoryValuesMB.length === 0) {
+                    // 没有历史数据，使用模拟数据
+                    const runtimeRanges = generateRanges(0, 1000, 50);
+                    const memoryRanges = generateRanges(0, 50, 2);
+                    const runtimeDistribution = generateMockDistribution(runtimeRanges, currentData.runtime);
+                    const memoryDistributionMB = (currentData.memory / (1024 * 1024));
+                    const memoryDistribution = generateMockDistribution(memoryRanges, memoryDistributionMB);
+                    
+                    renderChart(runtimeChart, runtimeRanges, runtimeDistribution, currentData.runtime, 'ms');
+                    renderChart(memoryChart, memoryRanges, memoryDistribution, memoryDistributionMB, 'MB');
+                } else {
+                    // 使用真实数据
+                    const runtimeRanges = calculateRanges(runtimeValues, currentData.runtime, 50);
+                    const memoryRanges = calculateRanges(memoryValuesMB, currentData.memory / (1024 * 1024), 2);
+                    
+                    const runtimeDistribution = calculateDistribution(runtimeValues, runtimeRanges);
+                    const memoryDistribution = calculateDistribution(memoryValuesMB, memoryRanges);
+                    
+                    renderChart(runtimeChart, runtimeRanges, runtimeDistribution, currentData.runtime, 'ms');
+                    renderChart(memoryChart, memoryRanges, memoryDistribution, currentData.memory / (1024 * 1024), 'MB');
+                }
+                
+            } catch (e) {
+                console.error('渲染图表失败:', e);
+            }
+        }
+
+        // 根据数据计算合理的区间
+        function calculateRanges(values, currentValue, step) {
+            if (values.length === 0) {
+                return generateRanges(0, Math.max(currentValue * 2, 100), step);
+            }
+            
+            const allValues = [...values, currentValue];
+            const min = Math.floor(Math.min(...allValues) / step) * step;
+            const max = Math.ceil(Math.max(...allValues) / step) * step;
+            
+            return generateRanges(min, max, step);
+        }
+
+        // 根据真实数据计算分布
+        function calculateDistribution(values, ranges) {
+            const distribution = new Array(ranges.length).fill(0);
+            
+            values.forEach(value => {
+                for (let i = 0; i < ranges.length; i++) {
+                    const range = ranges[i];
+                    const rangeStart = parseInt(range.split('-')[0]);
+                    const rangeEnd = range.includes('+') ? Infinity : parseInt(range.split('-')[1]);
+                    
+                    if (value >= rangeStart && value < rangeEnd) {
+                        distribution[i]++;
+                        break;
+                    }
+                }
+            });
+            
+            return distribution;
+        }
+
+        // 生成区间数组
+        function generateRanges(min, max, step) {
+            const ranges = [];
+            for (let i = min; i < max; i += step) {
+                ranges.push(`${i}-${i + step}`);
+            }
+            ranges.push(`${max}+`);
+            return ranges;
+        }
+
+        // 生成模拟分布数据（当没有历史数据时使用）
+        function generateMockDistribution(ranges, currentValue) {
+            const distribution = [];
+            for (let i = 0; i < ranges.length; i++) {
+                const range = ranges[i];
+                const rangeStart = parseInt(range.split('-')[0]);
+                const rangeEnd = range.includes('+') ? Infinity : parseInt(range.split('-')[1]);
+                
+                if (currentValue >= rangeStart && currentValue < rangeEnd) {
+                    // 当前值所在区间，设置一个较高的值（模拟有其他用户）
+                    distribution.push(Math.floor(Math.random() * 15) + 3);
+                } else {
+                    // 其他区间，随机较小的值
+                    distribution.push(Math.floor(Math.random() * 8));
+                }
+            }
+            return distribution;
+        }
+
+        // 渲染单个图表
+        function renderChart(chart, ranges, distribution, currentValue, unit) {
+            if (!chart) return;
+            
+            // 找到当前值所在的区间索引
+            let currentIndex = -1;
+            for (let i = 0; i < ranges.length; i++) {
+                const range = ranges[i];
+                const rangeStart = parseInt(range.split('-')[0]);
+                const rangeEnd = range.includes('+') ? Infinity : parseInt(range.split('-')[1]);
+                
+                if (currentValue >= rangeStart && currentValue < rangeEnd) {
+                    currentIndex = i;
+                    break;
+                }
+            }
+            
+            const option = {
+                backgroundColor: 'transparent',
+                textStyle: {
+                    color: '#ffffff'
+                },
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: {
+                        type: 'shadow'
+                    },
+                    backgroundColor: '#1e1e1e',
+                    borderColor: '#3c3c3c',
+                    borderWidth: 1,
+                    padding: [8, 12],
+                    textStyle: {
+                        color: '#ffffff',
+                        fontSize: 12
+                    },
+                    formatter: function(params) {
+                        const param = params[0];
+                        return `${param.name}<br/>用户数量: ${param.value}`;
+                    }
+                },
+                grid: {
+                    left: '3%',
+                    right: '4%',
+                    bottom: '8%',
+                    top: '5%',
+                    containLabel: true
+                },
+                xAxis: {
+                    type: 'category',
+                    data: ranges,
+                    axisLine: {
+                        show: false  // 不显示坐标轴线
+                    },
+                    axisTick: {
+                        show: false  // 不显示刻度线
+                    },
+                    axisLabel: {
+                        color: '#9ca3af',  // LeetCode 浅灰色
+                        rotate: 45,
+                        fontSize: 11,
+                        margin: 12
+                    }
+                },
+                yAxis: {
+                    type: 'value',
+                    name: '用户数量',
+                    nameTextStyle: {
+                        color: '#9ca3af',  // LeetCode 浅灰色
+                        fontSize: 11,
+                        padding: [0, 0, 0, -15]
+                    },
+                    axisLine: {
+                        show: false  // 不显示坐标轴线
+                    },
+                    axisTick: {
+                        show: false  // 不显示刻度线
+                    },
+                    axisLabel: {
+                        color: '#9ca3af',  // LeetCode 浅灰色
+                        fontSize: 11
+                    },
+                    splitLine: {
+                        show: true,
+                        lineStyle: {
+                            color: '#3c3c3c',  // 深灰色分割线
+                            type: 'dashed',  // 虚线
+                            width: 1
+                        }
+                    }
+                },
+                series: [{
+                    name: '用户数量',
+                    type: 'bar',
+                    barWidth: '60%',
+                    data: distribution.map((value, index) => {
+                        if (index === currentIndex) {
+                            // 高亮当前值所在区间 - 使用 LeetCode 标志性绿色
+                            return {
+                                value: value,
+                                itemStyle: {
+                                    color: '#2cbb5d'  // LeetCode 标志性绿色
+                                }
+                            };
+                        }
+                        // 其他柱子使用深灰色
+                        return {
+                            value: value,
+                            itemStyle: {
+                                color: '#4b5563'  // 深灰色
+                            }
+                        };
+                    }),
+                    label: {
+                        show: false
+                    },
+                    emphasis: {
+                        itemStyle: {
+                            color: '#2cbb5d'  // 鼠标悬停时也显示绿色
+                        }
+                    }
+                }]
+            };
+            
+            chart.setOption(option, true);
+            
+            // 确保图表自适应容器大小
+            setTimeout(() => {
+                chart.resize();
+            }, 100);
         }
 
         // === AI API 调用 ===
