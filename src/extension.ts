@@ -282,7 +282,8 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
                     await this._applyCodeToEditor(data.value, data.diagnosticFix, data.unitTest);
                     break;
                 case 'askAI':
-                    this._callAiWithHistory(data.value, data.codeContext);
+                    // ✨ 修改：传入 useLocalModel 参数
+                    this._callAiWithHistory(data.value, data.codeContext, data.useLocalModel);
                     break;
                 case 'loadProblem': // 🔥 加载题目
                     this._handleLoadProblem(data.value);
@@ -1316,7 +1317,7 @@ ${contextCode}
     }
 
     // === 通用 AI 调用 (JSON 模式) ===
-    private async _callAiWithHistory(userMessage: string, codeContext: string = "") {
+    private async _callAiWithHistory(userMessage: string, codeContext: string = "", useLocalModel: boolean = false) {
         if (!this._view) return;
 
         // 对于崩溃分析模式，userMessage 已经包含了完整的错误信息和源代码
@@ -1347,15 +1348,24 @@ ${contextCode}
         // (简单起见，我们假设前端已经 handle 了 loading，或者重复发也没事)
         
         try {
-            const config = vscode.workspace.getConfiguration('smartcoder');
-            const apiKey = config.get<string>('apiKey');
+            let apiUrl = "https://api.deepseek.com/chat/completions";
+            let modelName = "deepseek-chat";
+            let apiKey = vscode.workspace.getConfiguration('smartcoder').get<string>('apiKey');
 
-            if (!apiKey) {
-                this._view.webview.postMessage({ 
-                    type: 'addAiMessage', 
-                    data: { analysis: "❌ 请先配置 API Key", code: null } 
-                });
-                return;
+            // ✨ 新增：如果是本地模式，修改配置
+            if (useLocalModel) {
+                apiUrl = "http://localhost:11434/v1/chat/completions";
+                modelName = "qwen2.5-coder:7b"; // 确保你本地有这个模型
+                apiKey = "ollama"; // Ollama 不需要真实 key，但不传可能会报错
+            } else {
+                // DeepSeek 模式检查 Key
+                if (!apiKey) {
+                    this._view.webview.postMessage({ 
+                        type: 'addAiMessage', 
+                        data: { analysis: "❌ 请先配置 DeepSeek API Key", code: null } 
+                    });
+                    return;
+                }
             }
 
             // 根据不同的上下文模式使用不同的系统提示词
@@ -1389,15 +1399,16 @@ ${contextCode}
                 messages.push(...this._history);
             }
 
-            const response = await fetch("https://api.deepseek.com/chat/completions", {
+            // 发送请求
+            const response = await fetch(apiUrl, { // 使用动态的 apiUrl
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
                     "Authorization": `Bearer ${apiKey}`
                 },
                 body: JSON.stringify({
-                    model: "deepseek-chat",
-                    messages: messages,
+                    model: modelName, // 使用动态的 modelName
+                    messages: messages, // 使用上面构建好的 messages
                     response_format: { type: 'json_object' },
                     stream: false
                 })
@@ -1873,6 +1884,17 @@ ${contextCode}
                 }
                 #loadProblemBtn:hover { background: var(--vscode-button-hoverBackground); }
 
+                /* ✨ 模型切换区域样式 */
+                .model-switch {
+                    padding: 10px;
+                    background: var(--vscode-textBlockQuote-background);
+                    border-bottom: 1px solid var(--vscode-widget-border);
+                    font-size: 12px;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+
                 /* 🔥 云端状态栏 */
                 .cloud-status {
                     background: var(--vscode-textBlockQuote-background);
@@ -1909,6 +1931,11 @@ ${contextCode}
                 <button id="loadProblemBtn" title="加载题目">📥 加载</button>
             </div>
 
+            <div class="model-switch">
+                <input type="checkbox" id="useLocalModel">
+                <label for="useLocalModel">使用本地 Ollama (qwen2.5)</label>
+            </div>
+
             <!-- 🔥 云端状态栏 -->
             <div id="cloudStatus" class="cloud-status" style="display: none;">
                 <strong>☁️ 云端协同模式</strong><br>
@@ -1931,6 +1958,7 @@ ${contextCode}
                 const chatDiv = document.getElementById('chat');
                 const msgInput = document.getElementById('msgInput');
                 const contextChip = document.getElementById('contextChip');
+                const useLocalModelCheckbox = document.getElementById('useLocalModel');
                 let currentCodeContext = null;
 
                 // 监听顶部加载按钮
@@ -1992,9 +2020,18 @@ ${contextCode}
 
                 function sendMessage() {
                     const text = msgInput.value;
+                    // ✨ 获取是否使用本地模型
+                    const useLocal = useLocalModelCheckbox.checked;
+                    
                     if (!text && !currentCodeContext) return;
                     addMessage('user', { text: text || "请分析", codeContext: currentCodeContext });
-                    vscode.postMessage({ type: 'askAI', value: text || "请分析", codeContext: currentCodeContext });
+                    // ✨ 发送消息时带上 useLocalModel 参数
+                    vscode.postMessage({ 
+                        type: 'askAI', 
+                        value: text || "请分析", 
+                        codeContext: currentCodeContext,
+                        useLocalModel: useLocal  // 告诉后端使用什么模型
+                    });
                     msgInput.value = '';
                     clearContext();
                 }
