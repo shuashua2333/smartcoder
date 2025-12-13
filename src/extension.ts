@@ -318,7 +318,15 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     // 🔥 本地运行代码并获取性能数据（类似 LeetCode 评测）
-    private async _runCodeLocally(code: string): Promise<{ output: string; runtime: number; memory: number } | null> {
+    // ✨ 新增：支持测试用例验证
+    private async _runCodeLocally(code: string, testCases?: Array<{ input: string; expected: string }>): Promise<{ 
+        output: string; 
+        runtime: number; 
+        memory: number;
+        status: 'Accepted' | 'Wrong Answer' | 'Runtime Error' | 'Compile Error';
+        failedCase?: number;
+        errorMessage?: string;
+    } | null> {
         const tempDir = path.join(os.tmpdir(), `smartcoder-${Date.now()}-${Math.random().toString(36).substring(7)}`);
         const projectDir = path.join(tempDir, 'CodeProject');
         
@@ -405,8 +413,52 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
                 userCodeSnippet = code;
             }
             
-            // 包装代码，添加性能监控
-            const wrappedCode = `using System;
+            // ✨ 如果有测试用例，需要修改代码以支持输入注入
+            // 否则使用原来的包装方式
+            let wrappedCode: string;
+            
+            if (testCases && testCases.length > 0) {
+                // 测试用例模式：需要支持从标准输入读取
+                // 注意：这里我们使用 Console.ReadLine() 来模拟输入
+                // 实际运行时，我们会通过 stdin 注入输入
+                wrappedCode = `using System;
+using System.Diagnostics;
+using System.IO;
+
+class Program
+{
+    static void Main()
+    {
+        var sw = Stopwatch.StartNew();
+        long memoryBefore = GC.GetTotalMemory(false);
+        
+        try
+        {
+            // ========== 用户代码开始 ==========
+${userCodeSnippet}
+            // ========== 用户代码结束 ==========
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("EXCEPTION: " + ex.ToString());
+        }
+        finally
+        {
+            sw.Stop();
+            long memoryAfter = GC.GetTotalMemory(false);
+            long memoryUsed = Math.Max(0, memoryAfter - memoryBefore);
+            
+            // 输出性能数据（使用特殊标记，方便解析）
+            Console.WriteLine("\\n===SMARTCODER_PERF_START===");
+            Console.WriteLine($"RUNTIME_MS:{sw.ElapsedMilliseconds}");
+            Console.WriteLine($"MEMORY_BYTES:{memoryUsed}");
+            Console.WriteLine("===SMARTCODER_PERF_END===");
+        }
+    }
+}`;
+            } else {
+                // 无测试用例模式：保持原有逻辑
+                wrappedCode = `using System;
 using System.Diagnostics;
 
 class Program
@@ -440,6 +492,7 @@ ${userCodeSnippet}
         }
     }
 }`;
+            }
 
             // 4. 写入 Program.cs
             fs.writeFileSync(path.join(projectDir, 'Program.cs'), wrappedCode, 'utf8');
@@ -467,47 +520,160 @@ ${userCodeSnippet}
                 throw new Error(`编译失败：\n${buildOutput}`);
             }
             
-            // 构建成功后运行
-            const runResult = await execAsync(`${command} run`, {
-                cwd: projectDir,
-                timeout: 30000, // 30秒超时
-                maxBuffer: 1024 * 1024 * 10 // 10MB 缓冲区
-            });
+            // ✨ 如果有测试用例，循环运行所有测试用例
+            if (testCases && testCases.length > 0) {
+                let allPassed = true;
+                let failedCaseIndex = -1;
+                let errorMessage = '';
+                let totalRuntime = 0;
+                let totalMemory = 0;
+                const allOutputs: string[] = [];
 
-            const stdout = runResult.stdout || '';
-            const stderr = runResult.stderr || '';
+                for (let i = 0; i < testCases.length; i++) {
+                    const testCase = testCases[i];
+                    
+                    try {
+                        // 使用 spawn 来注入输入（spawn 已在文件顶部导入）
+                        const runProcess = spawn(command, ['run'], {
+                            cwd: projectDir,
+                            timeout: 30000,
+                            stdio: ['pipe', 'pipe', 'pipe']
+                        });
 
-            // 6. 解析输出，提取性能数据
-            const perfStart = stdout.indexOf('===SMARTCODER_PERF_START===');
-            const perfEnd = stdout.indexOf('===SMARTCODER_PERF_END===');
+                        // 注入测试输入
+                        runProcess.stdin.write(testCase.input);
+                        runProcess.stdin.end();
 
-            let output = stdout;
-            let runtime = 0;
-            let memory = 0;
+                        let stdout = '';
+                        let stderr = '';
+                        
+                        runProcess.stdout.on('data', (data: Buffer) => {
+                            stdout += data.toString();
+                        });
+                        
+                        runProcess.stderr.on('data', (data: Buffer) => {
+                            stderr += data.toString();
+                        });
 
-            if (perfStart !== -1 && perfEnd !== -1) {
-                // 提取实际输出（性能数据之前的部分）
-                output = stdout.substring(0, perfStart).trim();
-                
-                // 提取性能数据
-                const perfSection = stdout.substring(perfStart, perfEnd);
-                const runtimeMatch = perfSection.match(/RUNTIME_MS:(\d+)/);
-                const memoryMatch = perfSection.match(/MEMORY_BYTES:(\d+)/);
+                        await new Promise<void>((resolve, reject) => {
+                            runProcess.on('close', (code: number) => {
+                                if (code !== 0 && !stderr.includes('Build succeeded')) {
+                                    reject(new Error(`Process exited with code ${code}: ${stderr}`));
+                                } else {
+                                    resolve();
+                                }
+                            });
+                            
+                            runProcess.on('error', (err: Error) => {
+                                reject(err);
+                            });
+                        });
 
-                if (runtimeMatch) {
-                    runtime = parseInt(runtimeMatch[1], 10);
+                        // 解析输出，提取性能数据和实际输出
+                        const perfStart = stdout.indexOf('===SMARTCODER_PERF_START===');
+                        const perfEnd = stdout.indexOf('===SMARTCODER_PERF_END===');
+
+                        let actualOutput = stdout;
+                        let caseRuntime = 0;
+                        let caseMemory = 0;
+
+                        if (perfStart !== -1 && perfEnd !== -1) {
+                            // 提取实际输出（性能数据之前的部分）
+                            actualOutput = stdout.substring(0, perfStart).trim();
+                            
+                            // 提取性能数据
+                            const perfSection = stdout.substring(perfStart, perfEnd);
+                            const runtimeMatch = perfSection.match(/RUNTIME_MS:(\d+)/);
+                            const memoryMatch = perfSection.match(/MEMORY_BYTES:(\d+)/);
+
+                            if (runtimeMatch) {
+                                caseRuntime = parseInt(runtimeMatch[1], 10);
+                            }
+                            if (memoryMatch) {
+                                caseMemory = parseInt(memoryMatch[1], 10);
+                            }
+                        }
+
+                        // 比较输出（去除首尾空白）
+                        const expectedTrimmed = testCase.expected.trim();
+                        const actualTrimmed = actualOutput.trim();
+
+                        if (actualTrimmed !== expectedTrimmed) {
+                            allPassed = false;
+                            failedCaseIndex = i;
+                            errorMessage = `Failed at Case ${i + 1}: Expected '${expectedTrimmed}', Got '${actualTrimmed}'`;
+                            break; // 一旦失败就停止
+                        }
+
+                        // 累加性能数据（取最大值，因为每个测试用例独立运行）
+                        totalRuntime = Math.max(totalRuntime, caseRuntime);
+                        totalMemory = Math.max(totalMemory, caseMemory);
+                        allOutputs.push(actualOutput);
+
+                    } catch (caseError: any) {
+                        allPassed = false;
+                        failedCaseIndex = i;
+                        errorMessage = `Runtime Error at Case ${i + 1}: ${caseError.message}`;
+                        break;
+                    }
                 }
-                if (memoryMatch) {
-                    memory = parseInt(memoryMatch[1], 10);
+
+                return {
+                    output: allPassed ? allOutputs.join('\n') : errorMessage,
+                    runtime: totalRuntime,
+                    memory: totalMemory,
+                    status: allPassed ? 'Accepted' : (failedCaseIndex >= 0 ? 'Wrong Answer' : 'Runtime Error'),
+                    failedCase: failedCaseIndex >= 0 ? failedCaseIndex + 1 : undefined,
+                    errorMessage: allPassed ? undefined : errorMessage
+                };
+            } else {
+                // 无测试用例模式：保持原有逻辑
+                const runResult = await execAsync(`${command} run`, {
+                    cwd: projectDir,
+                    timeout: 30000, // 30秒超时
+                    maxBuffer: 1024 * 1024 * 10 // 10MB 缓冲区
+                });
+
+                const stdout = runResult.stdout || '';
+                const stderr = runResult.stderr || '';
+
+                // 6. 解析输出，提取性能数据
+                const perfStart = stdout.indexOf('===SMARTCODER_PERF_START===');
+                const perfEnd = stdout.indexOf('===SMARTCODER_PERF_END===');
+
+                let output = stdout;
+                let runtime = 0;
+                let memory = 0;
+
+                if (perfStart !== -1 && perfEnd !== -1) {
+                    // 提取实际输出（性能数据之前的部分）
+                    output = stdout.substring(0, perfStart).trim();
+                    
+                    // 提取性能数据
+                    const perfSection = stdout.substring(perfStart, perfEnd);
+                    const runtimeMatch = perfSection.match(/RUNTIME_MS:(\d+)/);
+                    const memoryMatch = perfSection.match(/MEMORY_BYTES:(\d+)/);
+
+                    if (runtimeMatch) {
+                        runtime = parseInt(runtimeMatch[1], 10);
+                    }
+                    if (memoryMatch) {
+                        memory = parseInt(memoryMatch[1], 10);
+                    }
                 }
-            }
 
-            // 如果有 stderr，附加到输出
-            if (stderr && !stderr.includes('Build succeeded')) {
-                output += (output ? '\n' : '') + stderr;
-            }
+                // 如果有 stderr，附加到输出
+                if (stderr && !stderr.includes('Build succeeded')) {
+                    output += (output ? '\n' : '') + stderr;
+                }
 
-            return { output, runtime, memory };
+                return { 
+                    output, 
+                    runtime, 
+                    memory,
+                    status: (runtime >= 0 && memory >= 0) ? 'Accepted' : 'Runtime Error'
+                };
+            }
 
         } catch (error: any) {
             // 如果运行失败，返回详细的错误信息
@@ -531,7 +697,9 @@ ${userCodeSnippet}
             return { 
                 output: errorOutput, 
                 runtime: -1, 
-                memory: -1 
+                memory: -1,
+                status: 'Compile Error' as const,
+                errorMessage: errorOutput
             };
         } finally {
             // 7. 清理临时目录
@@ -559,65 +727,107 @@ ${userCodeSnippet}
             return;
         }
 
-        this._view.webview.postMessage({ type: 'addUserMessage', value: "⚡ 正在本地运行代码并评测性能..." });
+        this._view.webview.postMessage({ type: 'addUserMessage', value: "正在本地运行代码并评测性能..." });
 
         try {
-            // 1. 先在本地运行代码，获取性能数据
-            const perfData = await this._runCodeLocally(code);
+            // ✨ 1. 从服务器获取测试用例（如果有 problemId）
+            let testCases: Array<{ input: string; expected: string }> | undefined = undefined;
+            if (this._currentProblemId && this._currentProblemId !== "Unknown") {
+                try {
+                    const problemResponse = await axios.get(`http://localhost:3000/api/problem/${this._currentProblemId}`);
+                    if (problemResponse.data && problemResponse.data.testCases) {
+                        testCases = problemResponse.data.testCases;
+                        if (testCases && testCases.length > 0) {
+                            this._view.webview.postMessage({ 
+                                type: 'addUserMessage', 
+                                value: `找到 ${testCases.length} 个测试用例，开始验证...` 
+                            });
+                        }
+                    }
+                } catch (e) {
+                    // 如果获取失败，继续使用无测试用例模式
+                    console.log('Failed to fetch test cases, running without verification');
+                }
+            }
+
+            // 2. 在本地运行代码，获取性能数据和验证结果
+            const perfData = await this._runCodeLocally(code, testCases);
 
             if (!perfData) {
                 throw new Error("本地运行失败");
             }
 
-            // 2. 显示性能数据和运行结果
+            // 3. 显示性能数据和运行结果
             let perfInfo = '';
-            let statusIcon = '✅';
             
-            if (perfData.runtime >= 0 && perfData.memory >= 0) {
-                // 成功获取性能数据
-                perfInfo = `\n\n⚡ **性能数据**\n- 运行时间: ${perfData.runtime}ms\n- 内存使用: ${(perfData.memory / 1024).toFixed(2)}KB`;
-                if (perfData.output) {
-                    perfInfo += `\n\n📤 **程序输出:**\n\`\`\`\n${perfData.output}\n\`\`\``;
+            // ✨ 根据状态显示不同的信息
+            if (perfData.status === 'Accepted') {
+                perfInfo = `\n\n**状态: Accepted**`;
+                if (testCases) {
+                    perfInfo += `\n- 通过所有 ${testCases.length} 个测试用例`;
                 }
-            } else {
-                // 性能数据获取失败
-                statusIcon = '⚠️';
-                perfInfo = `\n\n⚠️ **性能数据获取失败**`;
+                perfInfo += `\n\n**性能数据**\n- 运行时间: ${perfData.runtime}ms\n- 内存使用: ${(perfData.memory / 1024).toFixed(2)}KB`;
+                if (perfData.output) {
+                    perfInfo += `\n\n**程序输出:**\n\`\`\`\n${perfData.output}\n\`\`\``;
+                }
+            } else if (perfData.status === 'Wrong Answer') {
+                perfInfo = `\n\n**状态: Wrong Answer**`;
+                if (perfData.failedCase) {
+                    perfInfo += `\n- 测试用例 ${perfData.failedCase} 失败`;
+                }
+                if (perfData.errorMessage) {
+                    perfInfo += `\n- ${perfData.errorMessage}`;
+                }
+                perfInfo += `\n\n**性能数据**\n- 运行时间: ${perfData.runtime}ms\n- 内存使用: ${(perfData.memory / 1024).toFixed(2)}KB`;
+            } else if (perfData.status === 'Runtime Error' || perfData.status === 'Compile Error') {
+                perfInfo = `\n\n**状态: ${perfData.status}**`;
                 
                 // 显示错误信息
-                if (perfData.output) {
-                    perfInfo += `\n\n❌ **错误信息:**\n\`\`\`\n${perfData.output}\n\`\`\``;
+                if (perfData.errorMessage || perfData.output) {
+                    perfInfo += `\n\n**错误信息:**\n\`\`\`\n${perfData.errorMessage || perfData.output}\n\`\`\``;
                     
                     // 检查是否是 .NET SDK 问题
-                    if (perfData.output.includes('.NET SDK') || perfData.output.includes('dotnet')) {
-                        perfInfo += `\n\n💡 **解决方案:**\n请安装 .NET SDK：\n1. 访问 https://dotnet.microsoft.com/download\n2. 下载并安装 .NET SDK 6.0 或更高版本\n3. 重启 VS Code`;
+                    const errorText = (perfData.errorMessage || perfData.output || '').toLowerCase();
+                    if (errorText.includes('.net sdk') || errorText.includes('dotnet')) {
+                        perfInfo += `\n\n**解决方案:**\n请安装 .NET SDK：\n1. 访问 https://dotnet.microsoft.com/download\n2. 下载并安装 .NET SDK 6.0 或更高版本\n3. 重启 VS Code`;
                     }
                 } else {
                     perfInfo += `\n\n可能的原因：\n- .NET SDK 未安装\n- 代码编译失败\n- 代码运行超时（30秒）`;
+                }
+            } else {
+                // 兼容旧逻辑（无测试用例模式）
+                if (perfData.runtime >= 0 && perfData.memory >= 0) {
+                    perfInfo = `\n\n**性能数据**\n- 运行时间: ${perfData.runtime}ms\n- 内存使用: ${(perfData.memory / 1024).toFixed(2)}KB`;
+                    if (perfData.output) {
+                        perfInfo += `\n\n**程序输出:**\n\`\`\`\n${perfData.output}\n\`\`\``;
+                    }
+                } else {
+                    perfInfo = `\n\n**性能数据获取失败**`;
                 }
             }
 
             this._view.webview.postMessage({ 
                 type: 'addAiMessage', 
                 data: { 
-                    analysis: `${statusIcon} **本地运行完成**${perfInfo}\n\n📤 正在提交到云端...`, 
+                    analysis: `**本地运行完成**${perfInfo}\n\n正在提交到云端...`, 
                     code: null 
                 } 
             });
 
-            // 3. 发送给后端服务器（包含性能数据）
+            // 4. 发送给后端服务器（包含性能数据和状态）
             const response = await axios.post('http://localhost:3000/api/submit', {
                 problemId: this._currentProblemId || "Unknown",
                 code: code,
                 output: perfData.output,
                 runtime: perfData.runtime,
                 memory: perfData.memory,
+                status: perfData.status, // ✨ 新增：提交状态
                 timestamp: Date.now()
             });
             
             this._view.webview.postMessage({ 
                 type: 'addAiMessage', 
-                data: { analysis: "✅ **提交成功！**\n\n请切换回网页端查看 AI 导师的详细反馈。", code: null } 
+                data: { analysis: "**提交成功！**\n\n请切换回网页端查看 AI 导师的详细反馈。", code: null } 
             });
             vscode.window.showInformationMessage("提交成功！请查看网页端反馈。");
             
@@ -1104,7 +1314,7 @@ ${selectedText}
             // 4. 显示加载状态
             this._view?.webview.postMessage({ 
                 type: 'addUserMessage', 
-                value: `🔧 正在修复第 ${lineNumber + 1} 行的错误...` 
+                value: `正在修复第 ${lineNumber + 1} 行的错误...` 
             });
             this._view?.webview.postMessage({ type: 'showLoading' });
 
@@ -1355,7 +1565,8 @@ ${contextCode}
             // ✨ 新增：如果是本地模式，修改配置
             if (useLocalModel) {
                 apiUrl = "http://localhost:11434/v1/chat/completions";
-                modelName = "qwen2.5-coder:7b"; // 确保你本地有这个模型
+                // 支持多种模型名称：优先使用 qwen2.5-coder:7b，也支持 coder7B
+                modelName = "qwen2.5-coder:7b"; // 或 "coder7B"，确保你本地有这个模型
                 apiKey = "ollama"; // Ollama 不需要真实 key，但不传可能会报错
             } else {
                 // DeepSeek 模式检查 Key
@@ -1480,7 +1691,7 @@ ${contextCode}
                         await vscode.workspace.fs.writeFile(testFileUri, encoder.encode(code));
                         const doc = await vscode.workspace.openTextDocument(testFileUri);
                         await vscode.window.showTextDocument(doc);
-                        vscode.window.showInformationMessage(`✅ 测试文件 ${testFileName} 已覆盖`);
+                        vscode.window.showInformationMessage(`测试文件 ${testFileName} 已覆盖`);
                     } else if (action === '追加') {
                         // 追加到文件末尾
                         const existingDoc = await vscode.workspace.openTextDocument(testFileUri);
@@ -1490,7 +1701,7 @@ ${contextCode}
                         await vscode.workspace.fs.writeFile(testFileUri, encoder.encode(newText));
                         const doc = await vscode.workspace.openTextDocument(testFileUri);
                         await vscode.window.showTextDocument(doc);
-                        vscode.window.showInformationMessage(`✅ 测试代码已追加到 ${testFileName}`);
+                        vscode.window.showInformationMessage(`测试代码已追加到 ${testFileName}`);
                     }
                 } else {
                     // 创建新文件
@@ -1498,7 +1709,7 @@ ${contextCode}
                     await vscode.workspace.fs.writeFile(testFileUri, encoder.encode(code));
                     const doc = await vscode.workspace.openTextDocument(testFileUri);
                     await vscode.window.showTextDocument(doc);
-                    vscode.window.showInformationMessage(`✅ 测试文件 ${testFileName} 已创建`);
+                    vscode.window.showInformationMessage(`测试文件 ${testFileName} 已创建`);
                 }
             } catch (error: any) {
                 vscode.window.showErrorMessage(`创建测试文件失败: ${error.message}`);
@@ -1548,7 +1759,7 @@ ${contextCode}
                     targetEditor.selection = new vscode.Selection(range.start, range.start);
                     targetEditor.revealRange(range, vscode.TextEditorRevealType.InCenter);
 
-                    vscode.window.showInformationMessage('✅ 诊断错误已修复');
+                    vscode.window.showInformationMessage('诊断错误已修复');
                 }
             } catch (error: any) {
                 vscode.window.showErrorMessage(`应用修复失败: ${error.message}`);
@@ -1563,7 +1774,7 @@ ${contextCode}
             await editor.edit(builder => {
                 builder.replace(editor.selection, code);
             });
-            vscode.window.showInformationMessage('✅ 代码已应用到选中区域');
+            vscode.window.showInformationMessage('代码已应用到选中区域');
             return;
         }
 
@@ -1609,10 +1820,10 @@ ${contextCode}
                 await editor.edit(builder => {
                     builder.replace(targetRange!, code);
                 });
-                vscode.window.showInformationMessage('✅ 代码已智能替换');
+                vscode.window.showInformationMessage('代码已智能替换');
             } else if (action === '查看差异') {
                 // 打开差异视图（需要创建临时文件）
-                await this._showDiff(preview, code, codeType.name || '代码');
+                await this._showDiff(preview, code, codeType.name || '代码', editor, targetRange!);
             }
         } else {
             // 无法智能匹配，提供选项
@@ -1641,7 +1852,7 @@ ${contextCode}
                         );
                         builder.replace(fullRange, code);
                     });
-                    vscode.window.showInformationMessage('✅ 文件已替换');
+                    vscode.window.showInformationMessage('文件已替换');
                 }
             }
         }
@@ -1826,7 +2037,7 @@ ${contextCode}
     }
 
     // 显示差异视图
-    private async _showDiff(oldCode: string, newCode: string, label: string) {
+    private async _showDiff(oldCode: string, newCode: string, label: string, editor?: vscode.TextEditor, targetRange?: vscode.Range) {
         try {
             // 生成唯一的 URI（使用时间戳避免冲突）
             const timestamp = Date.now();
@@ -1845,110 +2056,669 @@ ${contextCode}
                 newUri,
                 `${label} (原代码) ↔ ${label} (新代码)`
             );
+
+            // ✨ Task 3: After showing diff, ask if user wants to apply changes
+            if (editor && targetRange) {
+                // Wait a bit for the diff view to open
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                const applyAction = await vscode.window.showInformationMessage(
+                    'Reviewing Diff... Do you want to apply these changes now?',
+                    'Yes, Apply',
+                    'No'
+                );
+
+                if (applyAction === 'Yes, Apply') {
+                    // ✨ Fix: Re-acquire the editor as it might be closed after diff view opens
+                    const currentEditor = vscode.window.activeTextEditor;
+                    if (!currentEditor) {
+                        // Try to reopen the original document
+                        const document = await vscode.workspace.openTextDocument(editor.document.uri);
+                        const reopenedEditor = await vscode.window.showTextDocument(document);
+                        
+                        if (reopenedEditor) {
+                            await reopenedEditor.edit(builder => {
+                                builder.replace(targetRange, newCode);
+                            });
+                            vscode.window.showInformationMessage('代码已应用');
+                        } else {
+                            vscode.window.showErrorMessage('无法打开编辑器以应用更改');
+                        }
+                    } else {
+                        // Use the currently active editor
+                        const document = currentEditor.document;
+                        const range = targetRange;
+                        
+                        await currentEditor.edit(builder => {
+                            builder.replace(range, newCode);
+                        });
+                        vscode.window.showInformationMessage('✅ 代码已应用');
+                    }
+                }
+            }
         } catch (error: any) {
             vscode.window.showErrorMessage(`打开差异视图失败: ${error.message}`);
         }
     }
 
-    // === 前端 HTML (增加了顶部刷题栏) ===
+    // === 前端 HTML (现代化 VS Code 原生风格) ===
     private _getHtmlForWebview() {
         return `<!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
+            <!-- Markdown & Code Highlighting Libraries -->
+            <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github-dark.min.css">
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
             <style>
-                body { font-family: var(--vscode-font-family); padding: 0; margin: 0; color: var(--vscode-editor-foreground); background-color: var(--vscode-editor-background); display: flex; flex-direction: column; height: 100vh; }
+                /* === Global Reset & Base Styles === */
+                *, *::before, *::after {
+                    box-sizing: border-box;
+                }
                 
-                /* 🔥 顶部刷题工具栏 */
-                .toolbar {
-                    padding: 10px;
+                body {
+                    padding: 0;
+                    margin: 0;
+                    font-family: var(--vscode-font-family);
+                    font-size: 13px;
+                    color: var(--vscode-foreground);
+                    background-color: var(--vscode-sideBar-background);
+                    display: flex;
+                    flex-direction: column;
+                    height: 100vh;
+                    overflow: hidden;
+                }
+
+                /* === Header Section: Problem Input & Model Toggle === */
+                .header-section {
+                    padding: 8px;
                     background: var(--vscode-sideBar-background);
                     border-bottom: 1px solid var(--vscode-widget-border);
-                    display: flex; gap: 6px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-                }
-                #problemInput {
-                    flex: 1;
-                    background: var(--vscode-input-background);
-                    color: var(--vscode-input-foreground);
-                    border: 1px solid var(--vscode-input-border);
-                    padding: 4px 8px; border-radius: 3px; outline: none;
-                    font-size: 12px;
-                }
-                #problemInput:focus { border-color: var(--vscode-focusBorder); }
-                #loadProblemBtn {
-                    background: var(--vscode-button-background);
-                    color: var(--vscode-button-foreground);
-                    border: none; padding: 4px 10px; cursor: pointer; border-radius: 3px; font-size: 12px;
-                    display: flex; align-items: center; justify-content: center;
-                }
-                #loadProblemBtn:hover { background: var(--vscode-button-hoverBackground); }
-
-                /* ✨ 模型切换区域样式 */
-                .model-switch {
-                    padding: 10px;
-                    background: var(--vscode-textBlockQuote-background);
-                    border-bottom: 1px solid var(--vscode-widget-border);
-                    font-size: 12px;
                     display: flex;
-                    align-items: center;
+                    flex-direction: column;
                     gap: 8px;
                 }
 
-                /* 🔥 云端状态栏 */
-                .cloud-status {
-                    background: var(--vscode-textBlockQuote-background);
-                    padding: 10px;
-                    border-left: 3px solid #0078d4;
-                    margin: 10px;
-                    font-size: 12px;
+                .problem-input-group {
+                    display: flex;
+                    gap: 0;
+                    align-items: stretch;
+                    border: 1px solid var(--vscode-input-border);
                     border-radius: 4px;
+                    overflow: hidden;
+                    background: var(--vscode-input-background);
                 }
 
-                .chat-container { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 15px; }
-                .message { padding: 12px; border-radius: 6px; font-size: 13px; line-height: 1.5; max-width: 100%; word-wrap: break-word; }
-                .user { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); align-self: flex-end; max-width: 85%; }
-                .ai { background: var(--vscode-editor-inactiveSelectionBackground); align-self: flex-start; width: 95%; }
-                .system { background: var(--vscode-textBlockQuote-background); border-left: 3px solid #0078d4; align-self: center; max-width: 90%; font-size: 12px; }
+                #problemInput {
+                    flex: 1;
+                    background: transparent;
+                    color: var(--vscode-input-foreground);
+                    border: none;
+                    padding: 4px 8px;
+                    outline: none;
+                    font-size: 13px;
+                    font-family: inherit;
+                }
 
-                .context-chip { display: none; background: var(--vscode-textBlockQuote-background); border-left: 3px solid var(--vscode-textLink-activeForeground); padding: 8px 12px; margin: 10px; font-size: 12px; color: var(--vscode-descriptionForeground); border-radius: 4px; cursor: pointer; }
-                .user-code-preview { background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; font-family: 'Consolas', monospace; font-size: 11px; margin-bottom: 8px; border-left: 2px solid rgba(255,255,255,0.3); white-space: pre-wrap; color: var(--vscode-textPreformat-foreground); }
-                
-                .code-box { margin-top: 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; overflow: hidden; background: var(--vscode-textBlockQuote-background); }
-                .code-header { display: flex; justify-content: space-between; align-items: center; padding: 5px 10px; background: rgba(0,0,0,0.1); border-bottom: 1px solid var(--vscode-panel-border); font-size: 11px; }
-                .code-content { padding: 10px; overflow-x: auto; font-family: 'Consolas', monospace; font-size: 12px; white-space: pre; }
-                .apply-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 10px; cursor: pointer; border-radius: 3px; }
+                #problemInput::placeholder {
+                    color: var(--vscode-input-placeholderForeground);
+                }
 
-                .input-area { padding: 15px; background: var(--vscode-sideBar-background); border-top: 1px solid var(--vscode-widget-border); }
-                textarea { width: 100%; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); resize: none; height: 50px; padding: 8px; border-radius: 4px; outline: none; box-sizing: border-box; font-family: inherit; }
-                .send-row { display: flex; justify-content: flex-end; margin-top: 8px; }
-                #sendBtn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 6px 15px; border-radius: 3px; cursor: pointer; }
+                .problem-input-group:focus-within {
+                    border-color: var(--vscode-focusBorder);
+                    outline: 1px solid var(--vscode-focusBorder);
+                    outline-offset: -1px;
+                }
+
+                /* === Button Base Styles (Compact) === */
+                .btn {
+                    height: 26px;
+                    padding: 4px 10px;
+                    border: none;
+                    border-radius: 2px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    font-weight: 400;
+                    white-space: nowrap;
+                    transition: background 0.15s, border-color 0.15s;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+
+                .btn-primary {
+                    background: var(--vscode-button-background);
+                    color: var(--vscode-button-foreground);
+                }
+
+                .btn-primary:hover {
+                    background: var(--vscode-button-hoverBackground);
+                }
+
+                .btn-primary:active {
+                    background: var(--vscode-button-activeBackground);
+                }
+
+                .btn-secondary {
+                    background: transparent;
+                    color: var(--vscode-foreground);
+                    border: 1px solid var(--vscode-widget-border);
+                }
+
+                .btn-secondary:hover {
+                    background: var(--vscode-toolbar-hoverBackground);
+                }
+
+                #loadProblemBtn {
+                    height: 26px;
+                    background: var(--vscode-button-background);
+                    color: var(--vscode-button-foreground);
+                    border: none;
+                    padding: 4px 10px;
+                    border-radius: 2px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    font-weight: 400;
+                    white-space: nowrap;
+                    transition: background 0.15s;
+                }
+
+                #loadProblemBtn:hover {
+                    background: var(--vscode-button-hoverBackground);
+                }
+
+                #loadProblemBtn:active {
+                    background: var(--vscode-button-activeBackground);
+                }
+
+                /* === Model Toggle Switch === */
+                .model-toggle-container {
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                }
+
+                .toggle-switch {
+                    position: relative;
+                    display: inline-block;
+                    width: 44px;
+                    height: 24px;
+                    cursor: pointer;
+                }
+
+                .toggle-switch input {
+                    opacity: 0;
+                    width: 0;
+                    height: 0;
+                }
+
+                .toggle-slider {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    bottom: 0;
+                    background-color: var(--vscode-input-background);
+                    border: 1px solid var(--vscode-input-border);
+                    border-radius: 12px;
+                    transition: 0.3s;
+                }
+
+                .toggle-slider:before {
+                    position: absolute;
+                    content: "";
+                    height: 18px;
+                    width: 18px;
+                    left: 2px;
+                    bottom: 2px;
+                    background-color: var(--vscode-editor-foreground);
+                    border-radius: 50%;
+                    transition: 0.3s;
+                }
+
+                input:checked + .toggle-slider {
+                    background-color: var(--vscode-button-background);
+                    border-color: var(--vscode-button-background);
+                }
+
+                input:checked + .toggle-slider:before {
+                    transform: translateX(20px);
+                    background-color: var(--vscode-button-foreground);
+                }
+
+                .toggle-label {
+                    font-size: 12px;
+                    color: var(--vscode-descriptionForeground);
+                    cursor: pointer;
+                    user-select: none;
+                }
+
+                /* === Cloud Status Badge === */
+                #cloudStatus {
+                    margin: 8px;
+                    padding: 4px 8px;
+                    background: var(--vscode-textBlockQuote-background);
+                    border: 1px solid var(--vscode-widget-border);
+                    border-radius: 3px;
+                    font-size: 11px;
+                    line-height: 1.4;
+                    display: none;
+                }
+
+                #cloudStatus strong {
+                    color: var(--vscode-textLink-foreground);
+                    font-weight: 500;
+                }
+
+                /* === Performance Dashboard (Badge Style) === */
+                .performance-dashboard {
+                    display: flex;
+                    gap: 8px;
+                    margin: 8px;
+                    padding: 6px;
+                    display: none;
+                }
+
+                .performance-dashboard.show {
+                    display: flex;
+                }
+
+                .metric-card {
+                    padding: 4px 8px;
+                    background: var(--vscode-textBlockQuote-background);
+                    border: 1px solid var(--vscode-widget-border);
+                    border-radius: 3px;
+                    font-size: 11px;
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                }
+
+                .metric-label {
+                    color: var(--vscode-descriptionForeground);
+                }
+
+                .metric-value {
+                    color: var(--vscode-foreground);
+                    font-weight: 500;
+                }
+
+                /* === Output Terminal Box === */
+                .output-terminal {
+                    margin: 8px;
+                    padding: 8px;
+                    background: var(--vscode-editor-background);
+                    border: 1px solid var(--vscode-panel-border);
+                    border-radius: 3px;
+                    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+                    font-size: 12px;
+                    line-height: 1.5;
+                    color: var(--vscode-foreground);
+                    white-space: pre-wrap;
+                    word-wrap: break-word;
+                    max-height: 150px;
+                    overflow-y: auto;
+                    display: none;
+                }
+
+                .output-terminal.show {
+                    display: block;
+                }
+
+                /* === Chat Container === */
+                .chat-container {
+                    flex: 1;
+                    overflow-y: auto;
+                    padding: 8px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 8px;
+                }
+
+                .message {
+                    padding: 8px 12px;
+                    border-radius: 3px;
+                    font-size: 13px;
+                    line-height: 1.5;
+                    max-width: 85%;
+                    word-wrap: break-word;
+                    position: relative;
+                }
+
+                .message.user {
+                    background: var(--vscode-button-background);
+                    color: var(--vscode-button-foreground);
+                    align-self: flex-end;
+                    margin-left: auto;
+                }
+
+                .message.ai {
+                    background: var(--vscode-sideBar-background);
+                    color: var(--vscode-foreground);
+                    border: 1px solid var(--vscode-widget-border);
+                    align-self: flex-start;
+                }
+
+                .message.system {
+                    background: var(--vscode-textBlockQuote-background);
+                    color: var(--vscode-descriptionForeground);
+                    align-self: center;
+                    max-width: 90%;
+                    font-size: 11px;
+                    padding: 4px 8px;
+                    border: 1px solid var(--vscode-widget-border);
+                }
+
+                .user-code-preview {
+                    background: var(--vscode-editor-background);
+                    padding: 6px 8px;
+                    border-radius: 3px;
+                    font-family: 'Consolas', 'Monaco', monospace;
+                    font-size: 11px;
+                    margin-bottom: 6px;
+                    border-left: 2px solid var(--vscode-textLink-foreground);
+                    white-space: pre-wrap;
+                    color: var(--vscode-foreground);
+                }
+
+                .context-chip {
+                    display: none;
+                    margin: 8px;
+                    padding: 4px 8px;
+                    background: var(--vscode-textBlockQuote-background);
+                    border: 1px solid var(--vscode-widget-border);
+                    border-left: 2px solid var(--vscode-textLink-activeForeground);
+                    border-radius: 3px;
+                    font-size: 11px;
+                    color: var(--vscode-descriptionForeground);
+                    cursor: pointer;
+                }
+
+                .context-chip:hover {
+                    background: var(--vscode-list-hoverBackground);
+                }
+
+                /* === Code Box === */
+                .code-box {
+                    margin-top: 8px;
+                    border: 1px solid var(--vscode-panel-border);
+                    border-radius: 3px;
+                    overflow: hidden;
+                    background: var(--vscode-editor-background);
+                }
+
+                .code-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 4px 8px;
+                    background: var(--vscode-sideBar-background);
+                    border-bottom: 1px solid var(--vscode-panel-border);
+                    font-size: 11px;
+                    font-weight: 400;
+                }
+
+                .code-content {
+                    padding: 8px;
+                    overflow-x: auto;
+                    font-family: 'Consolas', 'Monaco', monospace;
+                    font-size: 12px;
+                    white-space: pre;
+                    color: var(--vscode-foreground);
+                }
+
+                .apply-btn {
+                    height: 22px;
+                    background: var(--vscode-button-background);
+                    color: var(--vscode-button-foreground);
+                    border: none;
+                    padding: 2px 8px;
+                    cursor: pointer;
+                    border-radius: 2px;
+                    font-size: 11px;
+                    font-weight: 400;
+                    transition: background 0.15s;
+                }
+
+                .apply-btn:hover {
+                    background: var(--vscode-button-hoverBackground);
+                }
+
+                /* === Sticky Input Area === */
+                .input-area {
+                    position: sticky;
+                    bottom: 0;
+                    padding: 8px;
+                    background: var(--vscode-sideBar-background);
+                    border-top: 1px solid var(--vscode-widget-border);
+                    display: flex;
+                    flex-direction: column;
+                    gap: 6px;
+                }
+
+                #msgInput {
+                    width: 100%;
+                    background: var(--vscode-input-background);
+                    color: var(--vscode-input-foreground);
+                    border: 1px solid var(--vscode-input-border);
+                    resize: none;
+                    min-height: 50px;
+                    max-height: 100px;
+                    padding: 6px 8px;
+                    border-radius: 3px;
+                    outline: none;
+                    box-sizing: border-box;
+                    font-family: inherit;
+                    font-size: 13px;
+                    line-height: 1.5;
+                    transition: border-color 0.15s;
+                }
+
+                #msgInput:focus {
+                    border-color: var(--vscode-focusBorder);
+                    outline: 1px solid var(--vscode-focusBorder);
+                    outline-offset: -1px;
+                }
+
+                #msgInput::placeholder {
+                    color: var(--vscode-input-placeholderForeground);
+                }
+
+                .button-row {
+                    display: flex;
+                    justify-content: flex-end;
+                    gap: 6px;
+                }
+
+                #submitCloudBtn {
+                    height: 26px;
+                    background: transparent;
+                    color: var(--vscode-foreground);
+                    border: 1px solid var(--vscode-widget-border);
+                    padding: 4px 10px;
+                    border-radius: 2px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    font-weight: 400;
+                    transition: background 0.15s;
+                    display: none;
+                }
+
+                #submitCloudBtn:hover {
+                    background: var(--vscode-toolbar-hoverBackground);
+                }
+
+                #sendBtn {
+                    height: 26px;
+                    background: var(--vscode-button-background);
+                    color: var(--vscode-button-foreground);
+                    border: none;
+                    padding: 4px 10px;
+                    border-radius: 2px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    font-weight: 400;
+                    transition: background 0.15s;
+                }
+
+                #sendBtn:hover {
+                    background: var(--vscode-button-hoverBackground);
+                }
+
+                #sendBtn:active {
+                    background: var(--vscode-button-activeBackground);
+                }
+
+                /* === Scrollbar Styling === */
+                .chat-container::-webkit-scrollbar,
+                .output-terminal::-webkit-scrollbar {
+                    width: 10px;
+                }
+
+                .chat-container::-webkit-scrollbar-track,
+                .output-terminal::-webkit-scrollbar-track {
+                    background: var(--vscode-scrollbarSlider-background);
+                }
+
+                .chat-container::-webkit-scrollbar-thumb,
+                .output-terminal::-webkit-scrollbar-thumb {
+                    background: var(--vscode-scrollbarSlider-hoverBackground);
+                    border-radius: 5px;
+                }
+
+                /* === Markdown & Code Block Styling === */
+                .message pre {
+                    background: var(--vscode-editor-background);
+                    border: 1px solid var(--vscode-panel-border);
+                    border-radius: 3px;
+                    padding: 8px;
+                    margin: 6px 0;
+                    overflow-x: auto;
+                    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+                    font-size: 12px;
+                    line-height: 1.5;
+                }
+
+                .message code {
+                    background: var(--vscode-editor-background);
+                    color: var(--vscode-foreground);
+                    padding: 2px 4px;
+                    border-radius: 2px;
+                    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+                    font-size: 12px;
+                }
+
+                .message pre code {
+                    background: transparent;
+                    padding: 0;
+                    border-radius: 0;
+                }
+
+                .message p {
+                    margin: 6px 0;
+                }
+
+                .message p:first-child {
+                    margin-top: 0;
+                }
+
+                .message p:last-child {
+                    margin-bottom: 0;
+                }
+
+                .message ul, .message ol {
+                    margin: 6px 0;
+                    padding-left: 20px;
+                }
+
+                .message li {
+                    margin: 3px 0;
+                }
+
+                .message h1, .message h2, .message h3 {
+                    margin: 8px 0 6px 0;
+                    font-weight: 600;
+                }
+
+                .message h1 { font-size: 16px; }
+                .message h2 { font-size: 14px; }
+                .message h3 { font-size: 13px; }
+
+                .message blockquote {
+                    border-left: 2px solid var(--vscode-textBlockQuote-border);
+                    padding-left: 8px;
+                    margin: 6px 0;
+                    color: var(--vscode-textBlockQuote-foreground);
+                }
+
+                .message table {
+                    border-collapse: collapse;
+                    margin: 6px 0;
+                    width: 100%;
+                }
+
+                .message table th,
+                .message table td {
+                    border: 1px solid var(--vscode-panel-border);
+                    padding: 4px 8px;
+                    text-align: left;
+                }
+
+                .message table th {
+                    background: var(--vscode-textBlockQuote-background);
+                    font-weight: 600;
+                }
             </style>
         </head>
         <body>
-            <div class="toolbar">
-                <input type="text" id="problemInput" placeholder="输入题目名称 或 洛谷URL..." />
-                <button id="loadProblemBtn" title="加载题目">📥 加载</button>
+            <!-- Header Section -->
+            <div class="header-section">
+                <div class="problem-input-group">
+                    <input type="text" id="problemInput" placeholder="输入题目名称 或 洛谷URL..." />
+                    <button id="loadProblemBtn" title="加载题目">加载</button>
+                </div>
+                
+                <div class="model-toggle-container">
+                    <label class="toggle-switch" for="useLocalModel">
+                        <input type="checkbox" id="useLocalModel">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <label class="toggle-label" for="useLocalModel">Use Local Model (Qwen 2.5)</label>
+                </div>
             </div>
 
-            <div class="model-switch">
-                <input type="checkbox" id="useLocalModel">
-                <label for="useLocalModel">使用本地 Ollama (qwen2.5)</label>
+            <!-- Cloud Status Badge -->
+            <div id="cloudStatus" class="cloud-status">
+                <strong>云端协同模式</strong> | 题目: <span id="pTitle">无</span> | ID: <span id="pId">-</span>
             </div>
 
-            <!-- 🔥 云端状态栏 -->
-            <div id="cloudStatus" class="cloud-status" style="display: none;">
-                <strong>☁️ 云端协同模式</strong><br>
-                题目: <span id="pTitle">无</span> | ID: <span id="pId">-</span>
+            <!-- Performance Dashboard -->
+            <div id="performanceDashboard" class="performance-dashboard">
+                <div class="metric-card">
+                    <span class="metric-label">Runtime:</span>
+                    <span class="metric-value" id="perfRuntime">-</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Memory:</span>
+                    <span class="metric-value" id="perfMemory">-</span>
+                </div>
             </div>
 
+            <!-- Output Terminal -->
+            <div id="outputTerminal" class="output-terminal"></div>
+
+            <!-- Chat Container -->
             <div class="chat-container" id="chat"></div>
+            
+            <!-- Context Chip -->
             <div id="contextChip" class="context-chip" onclick="clearContext()"></div>
 
+            <!-- Sticky Input Area -->
             <div class="input-area">
                 <textarea id="msgInput" placeholder="输入问题... (Ctrl+Enter发送)"></textarea>
-                <div class="send-row">
-                    <button id="submitCloudBtn" style="display: none; margin-right: 8px; background: var(--vscode-button-secondaryBackground);">☁️ 提交到网页端</button>
+                <div class="button-row">
+                    <button id="submitCloudBtn">提交到网页端</button>
                     <button id="sendBtn">发送</button>
                 </div>
             </div>
@@ -1959,6 +2729,8 @@ ${contextCode}
                 const msgInput = document.getElementById('msgInput');
                 const contextChip = document.getElementById('contextChip');
                 const useLocalModelCheckbox = document.getElementById('useLocalModel');
+                const performanceDashboard = document.getElementById('performanceDashboard');
+                const outputTerminal = document.getElementById('outputTerminal');
                 let currentCodeContext = null;
 
                 // 监听顶部加载按钮
@@ -1969,10 +2741,38 @@ ${contextCode}
                     }
                 });
 
+                // 回车键加载题目
+                document.getElementById('problemInput').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        document.getElementById('loadProblemBtn').click();
+                    }
+                });
+
                 // 🔥 云端提交按钮点击事件
                 document.getElementById('submitCloudBtn').addEventListener('click', () => {
                     vscode.postMessage({ type: 'submitToCloud' });
                 });
+
+                // 更新性能仪表板
+                function updatePerformanceDashboard(runtime, memory) {
+                    if (runtime !== undefined && memory !== undefined && runtime >= 0 && memory >= 0) {
+                        document.getElementById('perfRuntime').textContent = runtime + 'ms';
+                        document.getElementById('perfMemory').textContent = (memory / 1024).toFixed(2) + 'KB';
+                        performanceDashboard.classList.add('show');
+                    } else {
+                        performanceDashboard.classList.remove('show');
+                    }
+                }
+
+                // 更新输出终端
+                function updateOutputTerminal(output) {
+                    if (output && output.trim()) {
+                        outputTerminal.textContent = output;
+                        outputTerminal.classList.add('show');
+                    } else {
+                        outputTerminal.classList.remove('show');
+                    }
+                }
 
                 window.addEventListener('message', event => {
                     const msg = event.data;
@@ -1980,10 +2780,10 @@ ${contextCode}
                         case 'setCloudMode':
                             // 🔥 显示云端模式
                             document.getElementById('cloudStatus').style.display = 'block';
-                            document.getElementById('pTitle').innerText = msg.title || '未知';
-                            document.getElementById('pId').innerText = msg.id || '-';
+                            document.getElementById('pTitle').textContent = msg.title || '未知';
+                            document.getElementById('pId').textContent = msg.id || '-';
                             document.getElementById('submitCloudBtn').style.display = 'inline-block';
-                            addMessage('system', { text: '✅ 已连接云端，请开始解题！' });
+                            addMessage('system', { text: '已连接云端，请开始解题！' });
                             break;
                         case 'setCodeContext':
                             currentCodeContext = msg.value;
@@ -1996,13 +2796,27 @@ ${contextCode}
                         case 'addAiMessage':
                             document.getElementById('loading')?.remove();
                             addMessage('ai', msg.data);
+                            // 检查是否有性能数据
+                            if (msg.data && msg.data.runtime !== undefined && msg.data.memory !== undefined) {
+                                updatePerformanceDashboard(msg.data.runtime, msg.data.memory);
+                            }
+                            if (msg.data && msg.data.output) {
+                                updateOutputTerminal(msg.data.output);
+                            }
                             break;
                         case 'showLoading':
                             const div = document.createElement('div');
                             div.id = 'loading';
                             div.className = 'message ai';
-                            div.innerText = '⚡ 思考中...';
+                            div.textContent = '思考中...';
                             chatDiv.appendChild(div);
+                            chatDiv.scrollTop = chatDiv.scrollHeight;
+                            break;
+                        case 'updatePerformance':
+                            updatePerformanceDashboard(msg.runtime, msg.memory);
+                            break;
+                        case 'updateOutput':
+                            updateOutputTerminal(msg.output);
                             break;
                     }
                 });
@@ -2012,7 +2826,7 @@ ${contextCode}
                         const lines = currentCodeContext.split('\\n');
                         const preview = lines.length > 1 ? lines[0].trim() + '...' : lines[0].trim();
                         contextChip.style.display = 'block';
-                        contextChip.innerText = '📄 已引用: ' + preview.substring(0, 30) + (preview.length>30?'...':'') + ' (点击取消)';
+                        contextChip.textContent = '已引用: ' + preview.substring(0, 30) + (preview.length>30?'...':'') + ' (点击取消)';
                     } else {
                         contextChip.style.display = 'none';
                     }
@@ -2050,12 +2864,34 @@ ${contextCode}
                             let previewCode = lines.length <= 3 ? data.codeContext : lines.slice(0, 3).join('\\n') + '\\n... (共 ' + lines.length + ' 行)';
                             html += \`<div class="user-code-preview">\${previewCode.replace(/</g, '&lt;')}</div>\`;
                         }
+                        // User messages: simple text, no markdown
                         html += \`<div>\${data.text ? data.text.replace(/</g, '&lt;') : ''}</div>\`;
                         div.innerHTML = html;
                     } else if (role === 'system') {
+                        // System messages: simple text with line breaks
                         div.innerHTML = \`<div>\${data.text ? data.text.replace(/</g, '&lt;').replace(/\\n/g, "<br>") : ''}</div>\`;
                     } else {
-                        let html = '<div>' + (data.analysis || '').replace(/</g, "&lt;").replace(/\\n/g, "<br>").replace(/\\*\\*(.*?)\\*\\*/g, "<b>$1</b>") + '</div>';
+                        // AI messages: render Markdown
+                        let html = '';
+                        if (data.analysis) {
+                            // Use marked.js to parse Markdown
+                            if (typeof marked !== 'undefined') {
+                                // Configure marked for safe parsing (escape HTML by default)
+                                marked.setOptions({
+                                    breaks: true,
+                                    gfm: true,
+                                    sanitize: false, // marked v4+ uses different API
+                                    headerIds: false,
+                                    mangle: false
+                                });
+                                const markdownHtml = marked.parse(data.analysis);
+                                html += '<div>' + markdownHtml + '</div>';
+                            } else {
+                                // Fallback if marked.js not loaded
+                                html += '<div>' + (data.analysis || '').replace(/</g, "&lt;").replace(/\\n/g, "<br>").replace(/\\*\\*(.*?)\\*\\*/g, "<b>$1</b>") + '</div>';
+                            }
+                        }
+                        
                         if (data.code && data.code.trim() !== "null") {
                             const codeB64 = btoa(unescape(encodeURIComponent(data.code))); 
                             let fixLabel = 'C# Template/Fix';
@@ -2063,21 +2899,39 @@ ${contextCode}
                             let unitTestInfo = '';
                             
                             if (data._diagnosticFix) {
-                                fixLabel = '🔧 修复诊断错误';
+                                fixLabel = '修复诊断错误';
                                 fixInfo = JSON.stringify(data._diagnosticFix);
                             } else if (data._unitTest) {
-                                fixLabel = '🧪 单元测试代码';
+                                fixLabel = '单元测试代码';
                                 unitTestInfo = JSON.stringify(data._unitTest);
                             }
                             
                             const fixInfoB64 = fixInfo ? btoa(unescape(encodeURIComponent(fixInfo))) : '';
                             const unitTestInfoB64 = unitTestInfo ? btoa(unescape(encodeURIComponent(unitTestInfo))) : '';
-                            html += \`<div class="code-box"><div class="code-header"><span>\${fixLabel}</span><button class="apply-btn" onclick="applyCode('\${codeB64}', '\${fixInfoB64}', '\${unitTestInfoB64}')">⚡ 应用</button></div><div class="code-content">\${data.code.replace(/</g, "&lt;")}</div></div>\`;
+                            
+                            // Highlight code if highlight.js is available
+                            let codeHtml = data.code.replace(/</g, "&lt;");
+                            if (typeof hljs !== 'undefined') {
+                                try {
+                                    codeHtml = hljs.highlight(codeHtml, { language: 'csharp' }).value;
+                                } catch (e) {
+                                    // If highlighting fails, use plain text
+                                }
+                            }
+                            
+                            html += \`<div class="code-box"><div class="code-header"><span>\${fixLabel}</span><button class="apply-btn" onclick="applyCode('\${codeB64}', '\${fixInfoB64}', '\${unitTestInfoB64}')">应用</button></div><div class="code-content">\${codeHtml}</div></div>\`;
                         }
                         div.innerHTML = html;
+                        
+                        // Highlight code blocks after rendering
+                        if (typeof hljs !== 'undefined') {
+                            div.querySelectorAll('pre code').forEach((block) => {
+                                hljs.highlightElement(block);
+                            });
+                        }
                     }
                     chatDiv.appendChild(div);
-                    window.scrollTo(0, document.body.scrollHeight);
+                    chatDiv.scrollTop = chatDiv.scrollHeight;
                 }
 
                 window.applyCode = (b64, fixInfoB64, unitTestInfoB64) => {

@@ -14,6 +14,43 @@ app.use(bodyParser.json());
 // 演示结束后重启服务器就会清空，非常适合大作业
 let submissions = [];
 
+// --- 问题数据库（包含测试用例）---
+// 每个问题包含 id, title, description, testCases
+// testCases 格式: [{ input: "1 2", expected: "3" }, ...]
+const problemsDatabase = [
+    {
+        id: "101",
+        title: "A + B Problem",
+        description: "计算两个整数的和",
+        testCases: [
+            { input: "1 2", expected: "3" },
+            { input: "10 20", expected: "30" },
+            { input: "-5 5", expected: "0" },
+            { input: "1000000 2000000", expected: "3000000" }
+        ]
+    },
+    {
+        id: "102",
+        title: "两数之和",
+        description: "给定一个整数数组和一个目标值，找出数组中和为目标值的两个数的索引",
+        testCases: [
+            { input: "2 7 11 15\n9", expected: "0 1" },
+            { input: "3 2 4\n6", expected: "1 2" },
+            { input: "3 3\n6", expected: "0 1" }
+        ]
+    },
+    {
+        id: "103",
+        title: "最大子数组和",
+        description: "找到一个具有最大和的连续子数组",
+        testCases: [
+            { input: "-2 1 -3 4 -1 2 1 -5 4", expected: "6" },
+            { input: "1", expected: "1" },
+            { input: "5 4 -1 7 8", expected: "23" }
+        ]
+    }
+];
+
 // 计算击败率：返回当前值击败了多少百分比的历史记录
 // 对于 runtime：越小越好（击败了更大值的）
 // 对于 memory：越小越好（击败了更大值的）
@@ -62,7 +99,8 @@ app.post('/api/submit', (req, res) => {
         runtime: currentRuntime,
         memory: currentMemory,
         timestamp: timestamp || Date.now(),
-        status: 'pending' // 待网页端处理
+        status: req.body.status || 'pending', // ✨ 支持从 extension 传来的状态（Accepted/Wrong Answer等）
+        submissionStatus: 'pending' // 待网页端处理（保留旧字段以兼容）
     };
     
     // 将新提交添加到数组
@@ -111,14 +149,49 @@ app.post('/api/mark_read', (req, res) => {
 
 // 4. 获取提交历史统计和分布数据
 app.get('/api/stats', (req, res) => {
-    const validSubmissions = submissions.filter(s => s.runtime >= 0 && s.memory >= 0);
+    const problemId = req.query.problemId; // ✨ 支持按问题ID筛选
+    let filteredSubmissions = submissions;
+    
+    // 如果指定了 problemId，只返回该问题的提交
+    if (problemId) {
+        filteredSubmissions = submissions.filter(s => s.problemId === problemId);
+    }
+    
+    const validSubmissions = filteredSubmissions.filter(s => s.runtime >= 0 && s.memory >= 0);
+    
+    // ✨ 按时间排序，用于折线图
+    const sortedSubmissions = validSubmissions.sort((a, b) => a.timestamp - b.timestamp);
     
     res.json({
-        totalSubmissions: submissions.length,
+        totalSubmissions: filteredSubmissions.length,
         validSubmissions: validSubmissions.length,
-        runtimeDistribution: validSubmissions.map(s => s.runtime),
-        memoryDistribution: validSubmissions.map(s => s.memory / (1024 * 1024)) // 转换为 MB
+        runtimeDistribution: validSubmissions.map(s => s.runtime), // 保留用于兼容
+        memoryDistribution: validSubmissions.map(s => s.memory / (1024 * 1024)), // 保留用于兼容
+        // ✨ 新增：时间序列数据（用于折线图）
+        history: sortedSubmissions.map(s => ({
+            timestamp: s.timestamp,
+            runtime: s.runtime,
+            memory: s.memory / (1024 * 1024), // 转换为 MB
+            status: s.status || 'Accepted'
+        }))
     });
+});
+
+// 5. ✨ 获取问题的测试用例
+app.get('/api/problem/:problemId', (req, res) => {
+    const problemId = req.params.problemId;
+    const problem = problemsDatabase.find(p => p.id === problemId);
+    
+    if (problem) {
+        res.json(problem);
+    } else {
+        res.status(404).json({ error: 'Problem not found' });
+    }
+});
+
+// 6. ✨ 获取所有问题列表
+app.get('/api/problems', (req, res) => {
+    res.json(problemsDatabase.map(p => ({ id: p.id, title: p.title, description: p.description })));
 });
 
 app.listen(PORT, () => {
