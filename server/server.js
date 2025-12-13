@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = 3000;
@@ -15,13 +17,18 @@ app.use(bodyParser.json());
 let submissions = [];
 
 // --- 问题数据库（包含测试用例）---
-// 每个问题包含 id, title, description, testCases
+// 每个问题包含 id, title, description, testCases, difficulty
 // testCases 格式: [{ input: "1 2", expected: "3" }, ...]
-const problemsDatabase = [
+// 定义数据文件路径
+const PROBLEMS_FILE = path.join(__dirname, 'problems.json');
+
+// 默认初始题目
+const DEFAULT_PROBLEMS = [
     {
         id: "101",
         title: "A + B Problem",
         description: "计算两个整数的和",
+        difficulty: "简单",
         testCases: [
             { input: "1 2", expected: "3" },
             { input: "10 20", expected: "30" },
@@ -33,6 +40,7 @@ const problemsDatabase = [
         id: "102",
         title: "两数之和",
         description: "给定一个整数数组和一个目标值，找出数组中和为目标值的两个数的索引",
+        difficulty: "简单",
         testCases: [
             { input: "2 7 11 15\n9", expected: "0 1" },
             { input: "3 2 4\n6", expected: "1 2" },
@@ -43,6 +51,7 @@ const problemsDatabase = [
         id: "103",
         title: "最大子数组和",
         description: "找到一个具有最大和的连续子数组",
+        difficulty: "中等",
         testCases: [
             { input: "-2 1 -3 4 -1 2 1 -5 4", expected: "6" },
             { input: "1", expected: "1" },
@@ -50,6 +59,44 @@ const problemsDatabase = [
         ]
     }
 ];
+
+// 初始化问题数据库：从文件读取，如果不存在则创建默认文件
+let problemsDatabase = [];
+
+function initializeProblemsDatabase() {
+    try {
+        // 检查文件是否存在
+        if (fs.existsSync(PROBLEMS_FILE)) {
+            // 读取文件内容
+            const fileContent = fs.readFileSync(PROBLEMS_FILE, 'utf8');
+            problemsDatabase = JSON.parse(fileContent);
+            console.log(`[Server] 从文件加载了 ${problemsDatabase.length} 道题目`);
+        } else {
+            // 文件不存在，使用默认题目并写入文件
+            problemsDatabase = JSON.parse(JSON.stringify(DEFAULT_PROBLEMS));
+            fs.writeFileSync(PROBLEMS_FILE, JSON.stringify(problemsDatabase, null, 2), 'utf8');
+            console.log(`[Server] 创建了默认题目文件，包含 ${problemsDatabase.length} 道题目`);
+        }
+    } catch (error) {
+        console.error('[Server] 初始化题目数据库失败:', error);
+        // 出错时使用默认题目
+        problemsDatabase = JSON.parse(JSON.stringify(DEFAULT_PROBLEMS));
+    }
+}
+
+// 保存题目到文件
+function saveProblemsToFile() {
+    try {
+        fs.writeFileSync(PROBLEMS_FILE, JSON.stringify(problemsDatabase, null, 2), 'utf8');
+        console.log(`[Server] 题目已保存到文件，当前共 ${problemsDatabase.length} 道题目`);
+    } catch (error) {
+        console.error('[Server] 保存题目到文件失败:', error);
+        throw error;
+    }
+}
+
+// 启动时初始化
+initializeProblemsDatabase();
 
 // 计算击败率：返回当前值击败了多少百分比的历史记录
 // 对于 runtime：越小越好（击败了更大值的）
@@ -189,9 +236,69 @@ app.get('/api/problem/:problemId', (req, res) => {
     }
 });
 
-// 6. ✨ 获取所有问题列表
+// 6. ✨ 获取所有问题列表（返回完整信息，包含标题和难度）
 app.get('/api/problems', (req, res) => {
-    res.json(problemsDatabase.map(p => ({ id: p.id, title: p.title, description: p.description })));
+    res.json(problemsDatabase.map(p => ({ 
+        id: p.id, 
+        title: p.title, 
+        description: p.description,
+        difficulty: p.difficulty || '中等'
+    })));
+});
+
+// 7. ✨ 新增题目接口
+app.post('/api/problems', (req, res) => {
+    const { id, title, description, testCases, difficulty } = req.body;
+    
+    // 验证必要字段
+    if (!id || !title || !description || !testCases || !Array.isArray(testCases) || testCases.length === 0) {
+        return res.status(400).json({ 
+            error: '题目数据不完整：必须包含 id, title, description 和 testCases（至少一个测试用例）' 
+        });
+    }
+    
+    // 检查是否已存在相同 ID 的题目
+    const existingIndex = problemsDatabase.findIndex(p => p.id === id);
+    
+    if (existingIndex >= 0) {
+        // 更新已存在的题目
+        problemsDatabase[existingIndex] = {
+            id,
+            title,
+            description,
+            testCases,
+            difficulty: difficulty || '中等'
+        };
+        console.log(`[Server] 更新题目: ${id} - ${title}`);
+    } else {
+        // 添加新题目
+        problemsDatabase.push({
+            id,
+            title,
+            description,
+            testCases,
+            difficulty: difficulty || '中等'
+        });
+        console.log(`[Server] 新增题目: ${id} - ${title}`);
+    }
+    
+    // 同步写入文件
+    try {
+        saveProblemsToFile();
+        res.json({ 
+            message: '题目保存成功',
+            problem: {
+                id,
+                title,
+                description,
+                difficulty: difficulty || '中等',
+                testCasesCount: testCases.length
+            }
+        });
+    } catch (error) {
+        console.error('[Server] 保存题目失败:', error);
+        res.status(500).json({ error: '保存题目到文件失败' });
+    }
 });
 
 app.listen(PORT, () => {

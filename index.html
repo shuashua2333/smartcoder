@@ -607,6 +607,14 @@
                 </div>
             </div>
 
+            <!-- 本地题库列表 -->
+            <div class="card">
+                <h2>📚 本地题库</h2>
+                <div id="problemsList" style="max-height: 200px; overflow-y: auto;">
+                    <div style="padding: 10px; color: #666; text-align: center;">加载中...</div>
+                </div>
+            </div>
+
             <!-- 题目卡片 -->
             <div class="card problem-card">
                 <div class="problem-content">
@@ -756,6 +764,87 @@
         // 初始化图表
         initCharts();
 
+        // === 加载本地题库列表 ===
+        async function loadProblemsList() {
+            const problemsListDiv = document.getElementById('problemsList');
+            try {
+                const response = await fetch('http://localhost:3000/api/problems');
+                if (!response.ok) {
+                    throw new Error('获取题库失败');
+                }
+                const problems = await response.json();
+                
+                if (problems.length === 0) {
+                    problemsListDiv.innerHTML = '<div style="padding: 10px; color: #666; text-align: center;">题库为空，请先生成题目</div>';
+                    return;
+                }
+                
+                // 渲染题目列表
+                problemsListDiv.innerHTML = problems.map(problem => {
+                    const isActive = currentProblem && currentProblem.id === problem.id;
+                    return `
+                        <div 
+                            class="problem-item" 
+                            style="
+                                padding: 12px; 
+                                margin-bottom: 8px; 
+                                background: ${isActive ? '#e3f2fd' : '#f5f5f5'}; 
+                                border-left: 4px solid ${isActive ? '#0078d4' : '#ccc'};
+                                border-radius: 4px;
+                                cursor: pointer;
+                                transition: all 0.3s;
+                            "
+                            onclick="loadProblem('${problem.id}')"
+                            onmouseover="this.style.background='${isActive ? '#e3f2fd' : '#eeeeee'}'"
+                            onmouseout="this.style.background='${isActive ? '#e3f2fd' : '#f5f5f5'}'"
+                        >
+                            <div style="font-weight: 600; color: #333; margin-bottom: 4px;">${problem.title}</div>
+                            <div style="font-size: 12px; color: #666;">
+                                <span>ID: ${problem.id}</span> | 
+                                <span>难度: ${problem.difficulty || '中等'}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+            } catch (error) {
+                console.error('加载题库列表失败:', error);
+                problemsListDiv.innerHTML = '<div style="padding: 10px; color: #f44336; text-align: center;">加载失败，请检查服务器连接</div>';
+            }
+        }
+
+        // === 加载指定题目 ===
+        async function loadProblem(problemId) {
+            try {
+                const response = await fetch(`http://localhost:3000/api/problem/${problemId}`);
+                if (!response.ok) {
+                    throw new Error('获取题目失败');
+                }
+                const problemData = await response.json();
+                
+                // 更新当前题目
+                currentProblem = problemData;
+                
+                // 更新题目卡片
+                document.getElementById('problemTitle').textContent = `题目 ${problemData.id}: ${problemData.title}`;
+                document.getElementById('problemId').textContent = `难度：${problemData.difficulty || '中等'} | ID: ${problemData.id}`;
+                document.getElementById('problemDescription').textContent = problemData.description || '暂无描述';
+                document.getElementById('openVsCodeBtn').disabled = false;
+                
+                // 刷新题库列表（高亮当前题目）
+                await loadProblemsList();
+                
+                addChatMessage('system', `已切换到题目：${problemData.title}`);
+                
+            } catch (error) {
+                console.error('加载题目失败:', error);
+                addChatMessage('system', `加载题目失败: ${error.message}`);
+            }
+        }
+
+        // 页面加载时加载题库列表
+        loadProblemsList();
+
         // === 知识点输入和AI出题 ===
         async function generateProblem() {
             const knowledge = document.getElementById('knowledgeInput').value.trim();
@@ -779,15 +868,27 @@
 2. 题目应该涵盖该知识点
 3. 提供清晰的题目描述（包括输入输出格式）
 4. 题目难度适中
+5. **必须生成至少3个测试用例**，每个测试用例包含输入和期望输出
 
 ⚠️ 重要：必须且只能返回纯 JSON 格式，不要使用 markdown 代码块，不要添加任何其他文字。
 格式：
 {
   "title": "题目名称",
-  "id": 101,
-  "description": "题目详细描述（支持换行\\n）",
-  "difficulty": "简单"
-}`;
+  "id": ${Date.now()},
+  "description": "题目详细描述（支持换行\\n，必须明确说明输入输出格式）",
+  "difficulty": "简单",
+  "testCases": [
+    {"input": "输入样例1", "expected": "期望输出1"},
+    {"input": "输入样例2", "expected": "期望输出2"},
+    {"input": "输入样例3", "expected": "期望输出3"}
+  ]
+}
+
+注意：
+- id 必须是数字或字符串，建议使用时间戳
+- testCases 是数组，必须包含至少3个测试用例
+- input 和 expected 都是字符串
+- expected 必须是该题目的标准正确输出`;
 
             try {
                 // 使用 JSON 模式调用 AI
@@ -812,7 +913,47 @@
                 
                 // 验证必要字段
                 if (!problemData.title || !problemData.id) {
-                    throw new Error('题目数据不完整');
+                    throw new Error('题目数据不完整：缺少 title 或 id');
+                }
+                
+                // 验证测试用例
+                if (!problemData.testCases || !Array.isArray(problemData.testCases) || problemData.testCases.length === 0) {
+                    throw new Error('题目数据不完整：必须包含至少一个测试用例');
+                }
+                
+                // 确保 id 是字符串
+                problemData.id = String(problemData.id);
+                
+                // 保存题目到后端
+                try {
+                    const saveResponse = await fetch('http://localhost:3000/api/problems', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            id: problemData.id,
+                            title: problemData.title,
+                            description: problemData.description,
+                            difficulty: problemData.difficulty || '中等',
+                            testCases: problemData.testCases
+                        })
+                    });
+                    
+                    if (!saveResponse.ok) {
+                        const errorData = await saveResponse.json().catch(() => ({ error: '保存失败' }));
+                        throw new Error(errorData.error || '保存题目失败');
+                    }
+                    
+                    const saveResult = await saveResponse.json();
+                    console.log('题目已保存到后端:', saveResult);
+                    
+                    // 刷新本地题库列表
+                    await loadProblemsList();
+                    
+                } catch (saveError) {
+                    console.error('保存题目失败:', saveError);
+                    addChatMessage('system', `⚠️ 题目生成成功，但保存到本地题库失败: ${saveError.message}`);
                 }
                 
                 // 更新题目卡片
@@ -822,7 +963,7 @@
                 document.getElementById('problemDescription').textContent = problemData.description || '暂无描述';
                 document.getElementById('openVsCodeBtn').disabled = false;
 
-                addChatMessage('ai', `✅ 题目已生成！\n\n**${problemData.title}**\n\n${problemData.description}\n\n点击"在 VS Code 中编程"开始解题吧！`);
+                addChatMessage('ai', `✅ 题目已生成并保存到本地题库！\n\n**${problemData.title}**\n\n${problemData.description}\n\n📝 包含 ${problemData.testCases.length} 个测试用例\n\n点击"在 VS Code 中编程"开始解题吧！`);
 
             } catch (e) {
                 console.error("出题失败:", e);
