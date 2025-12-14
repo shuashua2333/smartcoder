@@ -347,8 +347,9 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
             fs.writeFileSync(path.join(projectDir, 'CodeProject.csproj'), csprojContent);
 
             // 3. 智能提取用户代码并包装
-            // 检测用户代码结构，提取核心代码片段
+            // 检测用户代码结构，判断是否需要特殊处理
             let userCodeSnippet = code;
+            let isCompleteClass = false;
             
             // 检测是否包含 Main 方法
             const mainMethodRegex = /static\s+(void|int)\s+Main\s*\([^)]*\)\s*\{/i;
@@ -378,32 +379,50 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
                     userCodeSnippet = code.substring(mainStartIndex, mainEndIndex).trim();
                 }
             } else {
-                // 检测是否包含完整的类定义
-                const classRegex = /class\s+\w+\s*\{/i;
-                const classMatch = code.match(classRegex);
+                // 检测是否包含完整的类定义（包含 public/private 等修饰符）
+                const completeClassRegex = /(public\s+|private\s+|internal\s+)?class\s+\w+/i;
+                const completeClassMatch = code.match(completeClassRegex);
                 
-                if (classMatch) {
-                    // 如果包含类定义，提取类内部的代码
-                    const classStartIndex = classMatch.index! + classMatch[0].length;
+                // 检测是否包含 using 语句（说明是完整的代码文件）
+                const hasUsingStatements = /using\s+/.test(code);
+                
+                // 检测是否包含方法定义（public/private 方法）
+                const hasMethodDefinition = /(public|private|internal|protected)\s+\w+\s+\w+\s*\(/i.test(code);
+                
+                // 如果包含完整的类定义且（有 using 语句或有方法定义），说明是完整的代码文件
+                // 不应该提取类内部的代码，而应该保留整个类定义
+                if (completeClassMatch && (hasUsingStatements || hasMethodDefinition || code.includes('public class') || code.includes('class Solution'))) {
+                    isCompleteClass = true;
+                    // 对于完整的类定义，直接使用原始代码，不提取
+                    userCodeSnippet = code;
+                } else {
+                    // 检测是否包含简单的类定义（可能是部分代码）
+                    const classRegex = /class\s+\w+\s*\{/i;
+                    const classMatch = code.match(classRegex);
                     
-                    // 找到匹配的右大括号（类结束）
-                    let braceCount = 1;
-                    let classEndIndex = classStartIndex;
-                    
-                    for (let i = classStartIndex; i < code.length; i++) {
-                        if (code[i] === '{') braceCount++;
-                        if (code[i] === '}') {
-                            braceCount--;
-                            if (braceCount === 0) {
-                                classEndIndex = i;
-                                break;
+                    if (classMatch) {
+                        // 如果包含类定义，提取类内部的代码
+                        const classStartIndex = classMatch.index! + classMatch[0].length;
+                        
+                        // 找到匹配的右大括号（类结束）
+                        let braceCount = 1;
+                        let classEndIndex = classStartIndex;
+                        
+                        for (let i = classStartIndex; i < code.length; i++) {
+                            if (code[i] === '{') braceCount++;
+                            if (code[i] === '}') {
+                                braceCount--;
+                                if (braceCount === 0) {
+                                    classEndIndex = i;
+                                    break;
+                                }
                             }
                         }
-                    }
-                    
-                    // 提取类内部的代码
-                    if (classEndIndex > classStartIndex) {
-                        userCodeSnippet = code.substring(classStartIndex, classEndIndex).trim();
+                        
+                        // 提取类内部的代码
+                        if (classEndIndex > classStartIndex) {
+                            userCodeSnippet = code.substring(classStartIndex, classEndIndex).trim();
+                        }
                     }
                 }
             }
@@ -417,7 +436,22 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
             // 否则使用原来的包装方式
             let wrappedCode: string;
             
-            if (testCases && testCases.length > 0) {
+            // 如果检测到是完整的类定义，直接使用原始代码（不包装）
+            if (isCompleteClass) {
+                // 完整类定义模式：直接使用原始代码
+                // 如果代码中没有 Main 方法，需要添加一个简单的 Main 方法用于测试
+                const hasMainMethod = /static\s+(void|int)\s+Main\s*\(/i.test(userCodeSnippet);
+                
+                if (hasMainMethod) {
+                    // 如果已经有 Main 方法，直接使用
+                    wrappedCode = userCodeSnippet;
+                } else {
+                    // 如果没有 Main 方法，直接使用原始代码（可能是类定义，需要外部调用）
+                    // 这种情况下，代码应该可以编译，但无法直接运行
+                    // 为了兼容，我们直接使用原始代码
+                    wrappedCode = userCodeSnippet;
+                }
+            } else if (testCases && testCases.length > 0) {
                 // 测试用例模式：需要支持从标准输入读取
                 // 注意：这里我们使用 Console.ReadLine() 来模拟输入
                 // 实际运行时，我们会通过 stdin 注入输入
@@ -821,7 +855,9 @@ ${userCodeSnippet}
                 output: perfData.output,
                 runtime: perfData.runtime,
                 memory: perfData.memory,
-                status: perfData.status, // ✨ 新增：提交状态
+                status: perfData.status, // ✨ 提交状态
+                failedCase: perfData.failedCase, // ✨ 失败的测试用例编号
+                errorMessage: perfData.errorMessage, // ✨ 错误信息
                 timestamp: Date.now()
             });
             

@@ -128,8 +128,8 @@ function calculateBeatPercentage(value, allValues, isBetterLower = true) {
 
 // 1. 接收来自 VS Code 的提交（包含性能数据）
 app.post('/api/submit', (req, res) => {
-    const { code, problemId, output, runtime, memory, timestamp } = req.body;
-    console.log(`[Server] 收到来自 VS Code 的提交: 题目ID=${problemId}`);
+    const { code, problemId, output, runtime, memory, timestamp, status, failedCase, errorMessage } = req.body;
+    console.log(`[Server] 收到来自 VS Code 的提交: 题目ID=${problemId}, 状态=${status || 'pending'}`);
     
     const currentRuntime = runtime !== undefined ? runtime : -1;
     const currentMemory = memory !== undefined ? memory : -1;
@@ -146,7 +146,9 @@ app.post('/api/submit', (req, res) => {
         runtime: currentRuntime,
         memory: currentMemory,
         timestamp: timestamp || Date.now(),
-        status: req.body.status || 'pending', // ✨ 支持从 extension 传来的状态（Accepted/Wrong Answer等）
+        status: status || 'pending', // ✨ 支持从 extension 传来的状态（Accepted/Wrong Answer等）
+        failedCase: failedCase, // ✨ 失败的测试用例编号
+        errorMessage: errorMessage, // ✨ 错误信息
         submissionStatus: 'pending' // 待网页端处理（保留旧字段以兼容）
     };
     

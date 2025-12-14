@@ -10,6 +10,8 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    <!-- Split.js 库 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/split.js/1.6.0/split.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { 
@@ -42,17 +44,44 @@
         }
 
         .left-panel {
-            width: 45%;
             display: flex;
             flex-direction: column;
-            gap: 15px;
+            overflow: hidden;
         }
 
         .right-panel {
-            width: 55%;
             display: flex;
             flex-direction: column;
             gap: 15px;
+            overflow: hidden;
+        }
+
+        #leftTopContainer {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            overflow: hidden;
+        }
+
+        /* Split.js 拖拽条样式 */
+        .gutter {
+            background-color: #e0e0e0;
+            background-repeat: no-repeat;
+            background-position: 50%;
+            transition: background-color 0.3s;
+        }
+        .gutter:hover {
+            background-color: #0078d4;
+        }
+        .gutter.gutter-horizontal {
+            cursor: col-resize;
+            width: 10px;
+            background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAeCAYAAADkftS9AAAAIklEQVQoU2M4c+bMfxAGAgYYmwGrIIiDjrELjpo5aiZeMwF+yNnOs5KSvgAAAABJRU5ErkJggg==');
+        }
+        .gutter.gutter-vertical {
+            cursor: row-resize;
+            height: 10px;
+            background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB4AAAAFAQMAAABoV865AAAABlBMVEVHcEzMzMzyAv2sAAAAAXRSTlMAQObYZgAAABBJREFUeF5jOAMEEAIEEFwAn3kMwcB6I2AAAAAASUVORK5CYII=');
         }
 
         .card { 
@@ -592,31 +621,34 @@
 
     <div class="main-container">
         <!-- 左侧面板：题目区 -->
-        <div class="left-panel">
-            <!-- 知识点输入卡片 -->
-            <div class="card">
-                <h2>📚 我想学习</h2>
-                <div class="knowledge-input-area">
-                    <input 
-                        type="text" 
-                        id="knowledgeInput" 
-                        placeholder="输入知识点或想学的内容，例如：数组、排序算法、动态规划..."
-                        onkeypress="if(event.key==='Enter') generateProblem()"
-                    />
-                    <button id="generateBtn" onclick="generateProblem()">🎲 AI 出题</button>
+        <div class="left-panel" id="leftPanel">
+            <!-- 上方区域：知识点和题库 -->
+            <div id="leftTopContainer" style="display: flex; flex-direction: column; gap: 15px; overflow: hidden;">
+                <!-- 知识点输入卡片 -->
+                <div class="card" id="knowledgeCard">
+                    <h2>📚 我想学习</h2>
+                    <div class="knowledge-input-area">
+                        <input 
+                            type="text" 
+                            id="knowledgeInput" 
+                            placeholder="输入知识点或想学的内容，例如：数组、排序算法、动态规划..."
+                            onkeypress="if(event.key==='Enter') generateProblem()"
+                        />
+                        <button id="generateBtn" onclick="generateProblem()">🎲 AI 出题</button>
+                    </div>
                 </div>
-            </div>
 
-            <!-- 本地题库列表 -->
-            <div class="card">
-                <h2>📚 本地题库</h2>
-                <div id="problemsList" style="max-height: 200px; overflow-y: auto;">
-                    <div style="padding: 10px; color: #666; text-align: center;">加载中...</div>
+                <!-- 本地题库列表 -->
+                <div class="card">
+                    <h2>📚 本地题库</h2>
+                    <div id="problemsList" style="max-height: 200px; overflow-y: auto;">
+                        <div style="padding: 10px; color: #666; text-align: center;">加载中...</div>
+                    </div>
                 </div>
             </div>
 
             <!-- 题目卡片 -->
-            <div class="card problem-card">
+            <div class="card problem-card" id="problemCard">
                 <div class="problem-content">
                     <div class="problem-title" id="problemTitle">等待出题...</div>
                     <div class="problem-id" id="problemId"></div>
@@ -655,7 +687,7 @@
         </div>
 
         <!-- 右侧面板：结果展示和 AI 互动区 -->
-        <div class="right-panel">
+        <div class="right-panel" id="rightPanel">
             <!-- LeetCode 风格的结果展示 -->
             <div class="card result-container" id="resultContainer">
                 <div class="result-banner accepted" id="resultBanner">
@@ -763,6 +795,38 @@
 
         // 初始化图表
         initCharts();
+
+        // === 初始化 Split.js 可拖拽分栏 ===
+        function initSplitPanes() {
+            // 水平分割：左侧面板和右侧面板
+            if (document.getElementById('leftPanel') && document.getElementById('rightPanel')) {
+                Split(['#leftPanel', '#rightPanel'], {
+                    sizes: [45, 55], // 初始比例
+                    minSize: [200, 300], // 最小宽度
+                    gutterSize: 10,
+                    cursor: 'col-resize'
+                });
+            }
+
+            // 垂直分割：左侧面板内部的上方区域（知识点+题库）和题目卡片
+            if (document.getElementById('leftTopContainer') && document.getElementById('problemCard')) {
+                Split(['#leftTopContainer', '#problemCard'], {
+                    direction: 'vertical',
+                    sizes: [40, 60], // 初始比例
+                    minSize: [150, 200], // 最小高度
+                    gutterSize: 10,
+                    cursor: 'row-resize'
+                });
+            }
+        }
+
+        // 页面加载完成后初始化 Split.js
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initSplitPanes);
+        } else {
+            // 延迟一下确保 DOM 完全加载
+            setTimeout(initSplitPanes, 100);
+        }
 
         // === 加载本地题库列表 ===
         async function loadProblemsList() {
@@ -1088,75 +1152,147 @@
 
         // === 代码提交处理（包含性能数据） ===
         async function handleNewSubmission(data) {
+            console.log('[网页端] handleNewSubmission 被调用，数据:', data);
+            
             document.getElementById('sync-dot').classList.add('active');
             document.getElementById('last-update').textContent = '收到新代码: ' + new Date().toLocaleTimeString();
             
-            const preview = document.getElementById('code-preview');
-            preview.style.display = 'block';
-            preview.textContent = data.code;
+            // 隐藏代码预览区域
+            // const preview = document.getElementById('code-preview');
+            // preview.style.display = 'block';
+            // preview.textContent = data.code;
 
-            // 判断状态（Accepted 或 Error）
-            const isAccepted = data.runtime >= 0 && data.memory >= 0 && 
-                              (!data.output || !data.output.toLowerCase().includes('error') && !data.output.toLowerCase().includes('exception'));
+            // ✨ 使用插件端传来的 status 字段判断状态（插件端已经根据测试用例验证过了）
+            const status = data.status || 'Unknown';
+            const isAccepted = status === 'Accepted';
             
             // 显示 LeetCode 风格的结果展示
             const resultContainer = document.getElementById('resultContainer');
             const resultBanner = document.getElementById('resultBanner');
             
-            if (data.runtime >= 0 && data.memory >= 0) {
+            // 只要有性能数据或状态信息，就显示结果
+            if (data.runtime >= 0 && data.memory >= 0 || status !== 'Unknown') {
                 resultContainer.style.display = 'block';
                 
-                // 更新状态横幅
-                if (isAccepted) {
+                // 根据 status 更新状态横幅
+                if (status === 'Accepted') {
                     resultBanner.className = 'result-banner accepted';
                     resultBanner.innerHTML = '<span>✓</span><span>Accepted</span>';
-                } else {
+                } else if (status === 'Wrong Answer') {
                     resultBanner.className = 'result-banner error';
-                    resultBanner.innerHTML = '<span>✗</span><span>Error</span>';
-                }
-                
-                // 更新核心指标
-                const runtimeValue = data.runtime;
-                const memoryValueMB = (data.memory / (1024 * 1024)).toFixed(2);
-                
-                document.getElementById('runtimeValue').textContent = runtimeValue;
-                document.getElementById('memoryValue').textContent = memoryValueMB;
-                
-                // 更新击败率
-                const runtimeBeatPctEl = document.getElementById('runtimeBeatPct');
-                const memoryBeatPctEl = document.getElementById('memoryBeatPct');
-                
-                if (data.beatRuntimePct !== null && data.beatRuntimePct !== undefined) {
-                    runtimeBeatPctEl.textContent = `击败了 ${data.beatRuntimePct}% 的用户`;
+                    resultBanner.innerHTML = '<span>✗</span><span>Wrong Answer</span>';
+                } else if (status === 'Runtime Error' || status === 'Compile Error') {
+                    resultBanner.className = 'result-banner error';
+                    resultBanner.innerHTML = `<span>✗</span><span>${status}</span>`;
                 } else {
-                    runtimeBeatPctEl.textContent = '';
+                    // 兼容旧逻辑：如果没有 status，根据 runtime 和 memory 判断
+                    const hasValidPerf = data.runtime >= 0 && data.memory >= 0;
+                    const hasError = data.output && (data.output.toLowerCase().includes('error') || data.output.toLowerCase().includes('exception'));
+                    if (hasValidPerf && !hasError) {
+                        resultBanner.className = 'result-banner accepted';
+                        resultBanner.innerHTML = '<span>✓</span><span>Accepted</span>';
+                    } else {
+                        resultBanner.className = 'result-banner error';
+                        resultBanner.innerHTML = '<span>✗</span><span>Error</span>';
+                    }
                 }
                 
-                if (data.beatMemoryPct !== null && data.beatMemoryPct !== undefined) {
-                    memoryBeatPctEl.textContent = `击败了 ${data.beatMemoryPct}% 的用户`;
+                // 更新核心指标（只要有性能数据就显示）
+                if (data.runtime >= 0 && data.memory >= 0) {
+                    const runtimeValue = data.runtime;
+                    const memoryValueMB = (data.memory / (1024 * 1024)).toFixed(2);
+                    
+                    document.getElementById('runtimeValue').textContent = runtimeValue;
+                    document.getElementById('memoryValue').textContent = memoryValueMB;
+                    
+                    // 更新击败率
+                    const runtimeBeatPctEl = document.getElementById('runtimeBeatPct');
+                    const memoryBeatPctEl = document.getElementById('memoryBeatPct');
+                    
+                    if (data.beatRuntimePct !== null && data.beatRuntimePct !== undefined) {
+                        runtimeBeatPctEl.textContent = `击败了 ${data.beatRuntimePct}% 的用户`;
+                    } else {
+                        runtimeBeatPctEl.textContent = '';
+                    }
+                    
+                    if (data.beatMemoryPct !== null && data.beatMemoryPct !== undefined) {
+                        memoryBeatPctEl.textContent = `击败了 ${data.beatMemoryPct}% 的用户`;
+                    } else {
+                        memoryBeatPctEl.textContent = '';
+                    }
+                    
+                    // 渲染分布图表（需要从后端获取历史数据或模拟数据）
+                    await renderDistributionCharts(data);
                 } else {
-                    memoryBeatPctEl.textContent = '';
+                    // 如果没有性能数据，隐藏性能指标部分
+                    document.getElementById('runtimeValue').textContent = '-';
+                    document.getElementById('memoryValue').textContent = '-';
+                    document.getElementById('runtimeBeatPct').textContent = '';
+                    document.getElementById('memoryBeatPct').textContent = '';
                 }
-                
-                // 渲染分布图表（需要从后端获取历史数据或模拟数据）
-                await renderDistributionCharts(data);
             } else {
                 resultContainer.style.display = 'none';
             }
 
             // 在聊天中也显示简要信息
             let perfInfo = '';
-            if (data.runtime >= 0 && data.memory >= 0) {
-                perfInfo = `\n\n⚡ **性能评测结果**\n- 运行时间: ${data.runtime}ms`;
-                if (data.beatRuntimePct !== null && data.beatRuntimePct !== undefined) {
-                    perfInfo += ` 🏆 **击败了 ${data.beatRuntimePct}% 的用户**`;
-                }
-                perfInfo += `\n- 内存使用: ${(data.memory / 1024).toFixed(2)}KB`;
-                if (data.beatMemoryPct !== null && data.beatMemoryPct !== undefined) {
-                    perfInfo += ` 🏆 **击败了 ${data.beatMemoryPct}% 的用户**`;
+            
+            // ✨ 根据 status 显示不同的信息
+            if (status === 'Accepted') {
+                perfInfo = `\n\n✅ **状态: Accepted**`;
+                if (data.runtime >= 0 && data.memory >= 0) {
+                    perfInfo += `\n\n⚡ **性能评测结果**\n- 运行时间: ${data.runtime}ms`;
+                    if (data.beatRuntimePct !== null && data.beatRuntimePct !== undefined) {
+                        perfInfo += ` 🏆 **击败了 ${data.beatRuntimePct}% 的用户**`;
+                    }
+                    perfInfo += `\n- 内存使用: ${(data.memory / 1024).toFixed(2)}KB`;
+                    if (data.beatMemoryPct !== null && data.beatMemoryPct !== undefined) {
+                        perfInfo += ` 🏆 **击败了 ${data.beatMemoryPct}% 的用户**`;
+                    }
                 }
                 if (data.output) {
                     perfInfo += `\n\n📤 **程序输出:**\n\`\`\`\n${data.output}\n\`\`\``;
+                }
+            } else if (status === 'Wrong Answer') {
+                perfInfo = `\n\n❌ **状态: Wrong Answer**`;
+                if (data.failedCase) {
+                    perfInfo += `\n- 测试用例 ${data.failedCase} 失败`;
+                }
+                if (data.errorMessage) {
+                    perfInfo += `\n- ${data.errorMessage}`;
+                }
+                if (data.runtime >= 0 && data.memory >= 0) {
+                    perfInfo += `\n\n⚡ **性能评测结果**\n- 运行时间: ${data.runtime}ms`;
+                    if (data.beatRuntimePct !== null && data.beatRuntimePct !== undefined) {
+                        perfInfo += ` 🏆 **击败了 ${data.beatRuntimePct}% 的用户**`;
+                    }
+                    perfInfo += `\n- 内存使用: ${(data.memory / 1024).toFixed(2)}KB`;
+                    if (data.beatMemoryPct !== null && data.beatMemoryPct !== undefined) {
+                        perfInfo += ` 🏆 **击败了 ${data.beatMemoryPct}% 的用户**`;
+                    }
+                }
+                if (data.output) {
+                    perfInfo += `\n\n📤 **实际输出:**\n\`\`\`\n${data.output}\n\`\`\``;
+                }
+            } else if (status === 'Runtime Error' || status === 'Compile Error') {
+                perfInfo = `\n\n❌ **状态: ${status}**`;
+                if (data.errorMessage || data.output) {
+                    perfInfo += `\n\n**错误信息:**\n\`\`\`\n${data.errorMessage || data.output}\n\`\`\``;
+                }
+            } else {
+                // 兼容旧逻辑（没有 status 字段）
+                if (data.runtime >= 0 && data.memory >= 0) {
+                    perfInfo = `\n\n⚡ **性能评测结果**\n- 运行时间: ${data.runtime}ms`;
+                    if (data.beatRuntimePct !== null && data.beatRuntimePct !== undefined) {
+                        perfInfo += ` 🏆 **击败了 ${data.beatRuntimePct}% 的用户**`;
+                    }
+                    perfInfo += `\n- 内存使用: ${(data.memory / 1024).toFixed(2)}KB`;
+                    if (data.beatMemoryPct !== null && data.beatMemoryPct !== undefined) {
+                        perfInfo += ` 🏆 **击败了 ${data.beatMemoryPct}% 的用户**`;
+                    }
+                    if (data.output) {
+                        perfInfo += `\n\n📤 **程序输出:**\n\`\`\`\n${data.output}\n\`\`\``;
+                    }
                 }
             }
 
@@ -1788,12 +1924,38 @@ ${code}
                 const res = await fetch('http://localhost:3000/api/check');
                 const data = await res.json();
 
-                if (data && data.status === 'pending' && data.timestamp > lastTimestamp) {
-                    lastTimestamp = data.timestamp;
+                // 如果没有数据，跳过
+                if (!data) {
+                    return;
+                }
+
+                // 确保 timestamp 是数字类型
+                const dataTimestamp = Number(data.timestamp) || 0;
+                const currentLastTimestamp = Number(lastTimestamp) || 0;
+
+                // 调试信息
+                console.log('[网页端] 收到数据:', {
+                    timestamp: dataTimestamp,
+                    lastTimestamp: currentLastTimestamp,
+                    status: data.status,
+                    runtime: data.runtime,
+                    memory: data.memory,
+                    problemId: data.problemId
+                });
+
+                // ✨ 修复：检查是否有新提交（通过 timestamp 判断），不限制 status
+                // 只要不是 'read' 状态且时间戳更新，就处理
+                if (dataTimestamp > currentLastTimestamp && data.status !== 'read') {
+                    console.log('[网页端] ✅ 处理新提交，时间戳:', dataTimestamp);
+                    lastTimestamp = dataTimestamp;
                     handleNewSubmission(data);
+                } else if (data.status === 'read') {
+                    console.log('[网页端] ⏭️ 提交已标记为已读，跳过');
+                } else if (dataTimestamp <= currentLastTimestamp) {
+                    console.log('[网页端] ⏭️ 时间戳未更新（', dataTimestamp, '<=', currentLastTimestamp, '），跳过');
                 }
             } catch (e) {
-                console.error("连接服务器失败", e);
+                console.error("❌ 连接服务器失败", e);
             }
         }, 1000);
     </script>
