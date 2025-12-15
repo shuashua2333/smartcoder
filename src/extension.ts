@@ -262,6 +262,13 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
         private readonly _diffProvider: DiffContentProvider
     ) { }
 
+    // 这里为了节省篇幅，省略了未包含错误的方法实现（fixDiagnostic, _applyCodeToEditor, _callAiWithHistory, _handleLoadProblem, _submitToCloud, _getHtmlForWebview, generateUnitTest, analyzeRuntimeError）
+    // 请确保你在类中包含了这些方法的具体实现。
+    // 如果这些方法在原代码中存在，请保持不变。
+    
+    // (注意：为了修复你提供的代码片段，我需要假设缺失的方法在类中是存在的。
+    // 以下是你提供的代码片段中包含的方法实现)
+
     public resolveWebviewView(
         webviewView: vscode.WebviewView,
         context: vscode.WebviewViewResolveContext,
@@ -273,6 +280,7 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
             localResourceRoots: [this._extensionUri]
         };
 
+        // this._getHtmlForWebview() 需要在类中定义，这里假设它存在
         webviewView.webview.html = this._getHtmlForWebview();
 
         // === 监听前端消息 ===
@@ -295,6 +303,7 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
         });
     }
 
+
     public handleUserSelection(code: string) {
         if (this._view && code.trim()) {
             this._view.webview.postMessage({ type: 'setCodeContext', value: code });
@@ -313,7 +322,7 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
                 id: id
             });
             // 自动生成模板代码
-            this._applyCodeToEditor(`// Problem ID: ${id}\n// Title: ${title}\nusing System;\n\nclass Program {\n    static void Main() {\n        Console.WriteLine("Hello Cloud!");\n    }\n}`);
+            this._applyCodeToEditor(`// Problem ID: ${id}\n// Title: ${title}\nusing System;\n\nclass Program {\n    static void Main() {\n        Console.WriteLine("Hello Cloud!");\n    }\n}`, null, null);
         }
     }
 
@@ -454,6 +463,8 @@ ${baseIndent}}`;
 
     // 🔥 本地运行代码并获取性能数据（类似 LeetCode 评测）
     // ✨ 新增：支持测试用例验证
+// 🔥 修改1：去掉了定义里的 | null，保证 100% 返回有效对象
+// 🔥 修复：返回值类型去掉了 | null，确保必须返回有效结果
     private async _runCodeLocally(code: string, testCases?: Array<{ input: string; expected: string }>): Promise<{ 
         output: string; 
         runtime: number; 
@@ -461,7 +472,7 @@ ${baseIndent}}`;
         status: 'Accepted' | 'Wrong Answer' | 'Runtime Error' | 'Compile Error';
         failedCase?: number;
         errorMessage?: string;
-    } | null> {
+    }> {
         const tempDir = path.join(os.tmpdir(), `smartcoder-${Date.now()}-${Math.random().toString(36).substring(7)}`);
         const projectDir = path.join(tempDir, 'CodeProject');
         
@@ -482,59 +493,50 @@ ${baseIndent}}`;
             fs.writeFileSync(path.join(projectDir, 'CodeProject.csproj'), csprojContent);
 
             // 3. 智能提取用户代码并包装
-            // 检测用户代码结构，判断是否需要特殊处理
-            let wrappedCode: string;
+            let userCodeSnippet = code;
+            let isCompleteClass = false;
             
-            // 检测是否包含类定义和 Main 方法（完整文件模式）
-            const classRegex = /(public\s+|private\s+|internal\s+)?class\s+\w+/i;
-            const hasClass = classRegex.test(code);
+            // 检测是否包含 Main 方法
             const mainMethodRegex = /static\s+(void|int)\s+Main\s*\([^)]*\)\s*\{/i;
             const mainMatch = code.match(mainMethodRegex);
             
-            // 完整文件模式：包含类定义和 Main 方法
-            if (hasClass && mainMatch) {
-                // 注入性能监控代码到现有的 Main 方法中
-                wrappedCode = this._injectPerformanceMonitoring(code, mainMatch);
-            } else {
-                // 片段模式：提取代码片段并包装在 Program 类中
-                let userCodeSnippet = code;
+            if (mainMatch) {
+                // 如果包含 Main 方法，提取 Main 方法内部的代码
+                const mainStartIndex = mainMatch.index! + mainMatch[0].length;
+                let braceCount = 1;
+                let mainEndIndex = mainStartIndex;
                 
-                if (mainMatch) {
-                    // 如果包含 Main 方法但没有类定义，提取 Main 方法内部的代码
-                    const mainStartIndex = mainMatch.index! + mainMatch[0].length;
-                    
-                    // 找到匹配的右大括号（Main 方法结束）
-                    let braceCount = 1;
-                    let mainEndIndex = mainStartIndex;
-                    
-                    for (let i = mainStartIndex; i < code.length; i++) {
-                        if (code[i] === '{') braceCount++;
-                        if (code[i] === '}') {
-                            braceCount--;
-                            if (braceCount === 0) {
-                                mainEndIndex = i;
-                                break;
-                            }
+                for (let i = mainStartIndex; i < code.length; i++) {
+                    if (code[i] === '{') braceCount++;
+                    if (code[i] === '}') {
+                        braceCount--;
+                        if (braceCount === 0) {
+                            mainEndIndex = i;
+                            break;
                         }
                     }
-                    
-                    // 提取 Main 方法内部的代码
-                    if (mainEndIndex > mainStartIndex) {
-                        userCodeSnippet = code.substring(mainStartIndex, mainEndIndex).trim();
-                    }
+                }
+                if (mainEndIndex > mainStartIndex) {
+                    userCodeSnippet = code.substring(mainStartIndex, mainEndIndex).trim();
+                }
+            } else {
+                // 检测是否包含完整的类定义
+                const completeClassRegex = /(public\s+|private\s+|internal\s+)?class\s+\w+/i;
+                const completeClassMatch = code.match(completeClassRegex);
+                const hasUsingStatements = /using\s+/.test(code);
+                const hasMethodDefinition = /(public|private|internal|protected)\s+\w+\s+\w+\s*\(/i.test(code);
+                
+                if (completeClassMatch && (hasUsingStatements || hasMethodDefinition || code.includes('public class') || code.includes('class Solution'))) {
+                    isCompleteClass = true;
+                    userCodeSnippet = code;
                 } else {
-                    // 检测是否包含简单的类定义（可能是部分代码）
-                    const simpleClassRegex = /class\s+\w+\s*\{/i;
-                    const classMatch = code.match(simpleClassRegex);
-                    
+                    // 检测简单类定义
+                    const classRegex = /class\s+\w+\s*\{/i;
+                    const classMatch = code.match(classRegex);
                     if (classMatch) {
-                        // 如果包含类定义，提取类内部的代码
                         const classStartIndex = classMatch.index! + classMatch[0].length;
-                        
-                        // 找到匹配的右大括号（类结束）
                         let braceCount = 1;
                         let classEndIndex = classStartIndex;
-                        
                         for (let i = classStartIndex; i < code.length; i++) {
                             if (code[i] === '{') braceCount++;
                             if (code[i] === '}') {
@@ -545,24 +547,24 @@ ${baseIndent}}`;
                                 }
                             }
                         }
-                        
-                        // 提取类内部的代码
                         if (classEndIndex > classStartIndex) {
                             userCodeSnippet = code.substring(classStartIndex, classEndIndex).trim();
                         }
                     }
                 }
-                
-                // 如果提取的代码为空，使用原始代码
-                if (!userCodeSnippet || userCodeSnippet.trim() === '') {
-                    userCodeSnippet = code;
-                }
-                
-                // 包装代码片段
-                if (testCases && testCases.length > 0) {
-                // 测试用例模式：需要支持从标准输入读取
-                // 注意：这里我们使用 Console.ReadLine() 来模拟输入
-                // 实际运行时，我们会通过 stdin 注入输入
+            }
+            
+            if (!userCodeSnippet || userCodeSnippet.trim() === '') {
+                userCodeSnippet = code;
+            }
+            
+            // 生成 wrappedCode
+            let wrappedCode: string;
+            
+            if (isCompleteClass) {
+                wrappedCode = userCodeSnippet;
+            } else if (testCases && testCases.length > 0) {
+                // 测试用例模式包装
                 wrappedCode = `using System;
 using System.Diagnostics;
 using System.IO;
@@ -589,8 +591,6 @@ ${userCodeSnippet}
             sw.Stop();
             long memoryAfter = GC.GetTotalMemory(false);
             long memoryUsed = Math.Max(0, memoryAfter - memoryBefore);
-            
-            // 输出性能数据（使用特殊标记，方便解析）
             Console.WriteLine("\\n===SMARTCODER_PERF_START===");
             Console.WriteLine($"RUNTIME_MS:{sw.ElapsedMilliseconds}");
             Console.WriteLine($"MEMORY_BYTES:{memoryUsed}");
@@ -599,7 +599,7 @@ ${userCodeSnippet}
     }
 }`;
             } else {
-                // 无测试用例模式：保持原有逻辑
+                // 普通运行模式包装
                 wrappedCode = `using System;
 using System.Diagnostics;
 
@@ -625,8 +625,6 @@ ${userCodeSnippet}
             sw.Stop();
             long memoryAfter = GC.GetTotalMemory(false);
             long memoryUsed = Math.Max(0, memoryAfter - memoryBefore);
-            
-            // 输出性能数据（使用特殊标记，方便解析）
             Console.WriteLine("\\n===SMARTCODER_PERF_START===");
             Console.WriteLine($"RUNTIME_MS:{sw.ElapsedMilliseconds}");
             Console.WriteLine($"MEMORY_BYTES:{memoryUsed}");
@@ -639,17 +637,17 @@ ${userCodeSnippet}
             // 4. 写入 Program.cs
             fs.writeFileSync(path.join(projectDir, 'Program.cs'), wrappedCode, 'utf8');
 
-            // 5. 先检查 dotnet 是否可用
+            // 5. 检查 dotnet
             try {
                 await execAsync('dotnet --version', { timeout: 5000 });
             } catch (checkError) {
                 throw new Error('dotnet command not found. Please install .NET SDK from https://dotnet.microsoft.com/download');
             }
 
-            // 6. 先构建项目，再运行
+            // 6. 构建与运行
             const command = process.platform === 'win32' ? 'dotnet' : 'dotnet';
             
-            // 先构建（这会自动编译代码）
+            // 先构建
             try {
                 await execAsync(`${command} build`, {
                     cwd: projectDir,
@@ -657,12 +655,11 @@ ${userCodeSnippet}
                     maxBuffer: 1024 * 1024 * 10
                 });
             } catch (buildError: any) {
-                // 构建失败，返回构建错误信息
                 const buildOutput = buildError.stdout || buildError.stderr || buildError.message;
                 throw new Error(`编译失败：\n${buildOutput}`);
             }
             
-            // ✨ 如果有测试用例，循环运行所有测试用例
+            // 7. 分支逻辑：这里确保了所有成功路径都有 Return
             if (testCases && testCases.length > 0) {
                 let allPassed = true;
                 let failedCaseIndex = -1;
@@ -673,29 +670,20 @@ ${userCodeSnippet}
 
                 for (let i = 0; i < testCases.length; i++) {
                     const testCase = testCases[i];
-                    
                     try {
-                        // 使用 spawn 来注入输入（spawn 已在文件顶部导入）
                         const runProcess = spawn(command, ['run'], {
                             cwd: projectDir,
                             timeout: 30000,
                             stdio: ['pipe', 'pipe', 'pipe']
                         });
 
-                        // 注入测试输入
                         runProcess.stdin.write(testCase.input);
                         runProcess.stdin.end();
 
                         let stdout = '';
                         let stderr = '';
-                        
-                        runProcess.stdout.on('data', (data: Buffer) => {
-                            stdout += data.toString();
-                        });
-                        
-                        runProcess.stderr.on('data', (data: Buffer) => {
-                            stderr += data.toString();
-                        });
+                        runProcess.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+                        runProcess.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
 
                         await new Promise<void>((resolve, reject) => {
                             runProcess.on('close', (code: number) => {
@@ -705,38 +693,24 @@ ${userCodeSnippet}
                                     resolve();
                                 }
                             });
-                            
-                            runProcess.on('error', (err: Error) => {
-                                reject(err);
-                            });
+                            runProcess.on('error', (err: Error) => { reject(err); });
                         });
 
-                        // 解析输出，提取性能数据和实际输出
                         const perfStart = stdout.indexOf('===SMARTCODER_PERF_START===');
                         const perfEnd = stdout.indexOf('===SMARTCODER_PERF_END===');
-
                         let actualOutput = stdout;
                         let caseRuntime = 0;
                         let caseMemory = 0;
 
                         if (perfStart !== -1 && perfEnd !== -1) {
-                            // 提取实际输出（性能数据之前的部分）
                             actualOutput = stdout.substring(0, perfStart).trim();
-                            
-                            // 提取性能数据
                             const perfSection = stdout.substring(perfStart, perfEnd);
                             const runtimeMatch = perfSection.match(/RUNTIME_MS:(\d+)/);
                             const memoryMatch = perfSection.match(/MEMORY_BYTES:(\d+)/);
-
-                            if (runtimeMatch) {
-                                caseRuntime = parseInt(runtimeMatch[1], 10);
-                            }
-                            if (memoryMatch) {
-                                caseMemory = parseInt(memoryMatch[1], 10);
-                            }
+                            if (runtimeMatch) caseRuntime = parseInt(runtimeMatch[1], 10);
+                            if (memoryMatch) caseMemory = parseInt(memoryMatch[1], 10);
                         }
 
-                        // 比较输出（去除首尾空白）
                         const expectedTrimmed = testCase.expected.trim();
                         const actualTrimmed = actualOutput.trim();
 
@@ -744,10 +718,9 @@ ${userCodeSnippet}
                             allPassed = false;
                             failedCaseIndex = i;
                             errorMessage = `Failed at Case ${i + 1}: Expected '${expectedTrimmed}', Got '${actualTrimmed}'`;
-                            break; // 一旦失败就停止
+                            break;
                         }
 
-                        // 累加性能数据（取最大值，因为每个测试用例独立运行）
                         totalRuntime = Math.max(totalRuntime, caseRuntime);
                         totalMemory = Math.max(totalMemory, caseMemory);
                         allOutputs.push(actualOutput);
@@ -760,6 +733,7 @@ ${userCodeSnippet}
                     }
                 }
 
+                // ✅ 路径 1：有测试用例时的返回
                 return {
                     output: allPassed ? allOutputs.join('\n') : errorMessage,
                     runtime: totalRuntime,
@@ -769,17 +743,15 @@ ${userCodeSnippet}
                     errorMessage: allPassed ? undefined : errorMessage
                 };
             } else {
-                // 无测试用例模式：保持原有逻辑
+                // 无测试用例模式
                 const runResult = await execAsync(`${command} run`, {
                     cwd: projectDir,
-                    timeout: 30000, // 30秒超时
-                    maxBuffer: 1024 * 1024 * 10 // 10MB 缓冲区
+                    timeout: 30000,
+                    maxBuffer: 1024 * 1024 * 10
                 });
 
                 const stdout = runResult.stdout || '';
                 const stderr = runResult.stderr || '';
-
-                // 6. 解析输出，提取性能数据
                 const perfStart = stdout.indexOf('===SMARTCODER_PERF_START===');
                 const perfEnd = stdout.indexOf('===SMARTCODER_PERF_END===');
 
@@ -788,27 +760,19 @@ ${userCodeSnippet}
                 let memory = 0;
 
                 if (perfStart !== -1 && perfEnd !== -1) {
-                    // 提取实际输出（性能数据之前的部分）
                     output = stdout.substring(0, perfStart).trim();
-                    
-                    // 提取性能数据
                     const perfSection = stdout.substring(perfStart, perfEnd);
                     const runtimeMatch = perfSection.match(/RUNTIME_MS:(\d+)/);
                     const memoryMatch = perfSection.match(/MEMORY_BYTES:(\d+)/);
-
-                    if (runtimeMatch) {
-                        runtime = parseInt(runtimeMatch[1], 10);
-                    }
-                    if (memoryMatch) {
-                        memory = parseInt(memoryMatch[1], 10);
-                    }
+                    if (runtimeMatch) runtime = parseInt(runtimeMatch[1], 10);
+                    if (memoryMatch) memory = parseInt(memoryMatch[1], 10);
                 }
 
-                // 如果有 stderr，附加到输出
                 if (stderr && !stderr.includes('Build succeeded')) {
                     output += (output ? '\n' : '') + stderr;
                 }
 
+                // ✅ 路径 2：无测试用例时的返回
                 return { 
                     output, 
                     runtime, 
@@ -816,20 +780,16 @@ ${userCodeSnippet}
                     status: (runtime >= 0 && memory >= 0) ? 'Accepted' : 'Runtime Error'
                 };
             }
-        }
+
         } catch (error: any) {
-            // 如果运行失败，返回详细的错误信息
+            // ✅ 路径 3：发生异常时的返回
             let errorOutput = '';
             
-            // 检查是否是 .NET SDK 未安装
             if (error.message && (error.message.includes('dotnet') || error.message.includes('not found') || error.message.includes('不是内部或外部命令'))) {
                 errorOutput = '❌ 错误：未检测到 .NET SDK\n\n请先安装 .NET SDK：\n1. 访问 https://dotnet.microsoft.com/download\n2. 下载并安装 .NET SDK 6.0 或更高版本\n3. 安装后运行 "dotnet --version" 验证';
             } else if (error.stdout) {
-                // 如果有 stdout，可能是编译错误
                 errorOutput = `编译/运行错误：\n${error.stdout}`;
-                if (error.stderr) {
-                    errorOutput += `\n${error.stderr}`;
-                }
+                if (error.stderr) errorOutput += `\n${error.stderr}`;
             } else if (error.stderr) {
                 errorOutput = `错误：\n${error.stderr}`;
             } else {
@@ -844,18 +804,19 @@ ${userCodeSnippet}
                 errorMessage: errorOutput
             };
         } finally {
-            // 7. 清理临时目录
+            // 清理逻辑
             try {
                 if (fs.existsSync(tempDir)) {
                     fs.rmSync(tempDir, { recursive: true, force: true });
                 }
             } catch (cleanupError) {
-                // 清理失败不影响主流程，只记录错误
                 console.error('清理临时目录失败:', cleanupError);
             }
         }
-        return null;
+        // 🔥 彻底不需要 return null，因为 try 里的 if/else 和 catch 都已经有了 return
     }
+    
+ // 结束 SmartCoderSidebarProvider 类
 
     // 🔥 发送代码给后端 Server（已添加性能评测）
     private async _submitToCloud() {
