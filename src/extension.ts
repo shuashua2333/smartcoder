@@ -493,147 +493,24 @@ ${baseIndent}}`;
             fs.writeFileSync(path.join(projectDir, 'CodeProject.csproj'), csprojContent);
 
             // 3. 智能提取用户代码并包装
-            let userCodeSnippet = code;
-            let isCompleteClass = false;
-            
-            // 检测是否包含 Main 方法
-            const mainMethodRegex = /static\s+(void|int)\s+Main\s*\([^)]*\)\s*\{/i;
-            const mainMatch = code.match(mainMethodRegex);
-            
-            if (mainMatch) {
-                // 如果包含 Main 方法，提取 Main 方法内部的代码
-                const mainStartIndex = mainMatch.index! + mainMatch[0].length;
-                let braceCount = 1;
-                let mainEndIndex = mainStartIndex;
-                
-                for (let i = mainStartIndex; i < code.length; i++) {
-                    if (code[i] === '{') braceCount++;
-                    if (code[i] === '}') {
-                        braceCount--;
-                        if (braceCount === 0) {
-                            mainEndIndex = i;
-                            break;
-                        }
+            // 3. 智能提取用户代码并包装
+            // ==================================================================================
+            // 🔥 极简逻辑修改版：不再尝试去“扣”代码，而是基于“是否存在 Main”来决定是否包装
+            // ==================================================================================
+            // 3. 智能提取用户代码并包装
+            // ==================================================================================
+            // 🔥 修复版逻辑：使用更宽容的检测方式，防止误判
+            // ==================================================================================
+            let wrappedCode = code;
+
+            try {
+                    const mainMatch = wrappedCode.match(/static\s+(void|int)\s+Main\s*\([^)]*\)\s*\{/i);
+                    if (mainMatch) {
+                        wrappedCode = this._injectPerformanceMonitoring(wrappedCode, mainMatch);
                     }
+                } catch (e) {
+                    console.log("性能监控注入跳过，使用原始代码");
                 }
-                if (mainEndIndex > mainStartIndex) {
-                    userCodeSnippet = code.substring(mainStartIndex, mainEndIndex).trim();
-                }
-            } else {
-                // 检测是否包含完整的类定义
-                const completeClassRegex = /(public\s+|private\s+|internal\s+)?class\s+\w+/i;
-                const completeClassMatch = code.match(completeClassRegex);
-                const hasUsingStatements = /using\s+/.test(code);
-                const hasMethodDefinition = /(public|private|internal|protected)\s+\w+\s+\w+\s*\(/i.test(code);
-                
-                if (completeClassMatch && (hasUsingStatements || hasMethodDefinition || code.includes('public class') || code.includes('class Solution'))) {
-                    isCompleteClass = true;
-                    userCodeSnippet = code;
-                } else {
-                    // 检测简单类定义
-                    const classRegex = /class\s+\w+\s*\{/i;
-                    const classMatch = code.match(classRegex);
-                    if (classMatch) {
-                        const classStartIndex = classMatch.index! + classMatch[0].length;
-                        let braceCount = 1;
-                        let classEndIndex = classStartIndex;
-                        for (let i = classStartIndex; i < code.length; i++) {
-                            if (code[i] === '{') braceCount++;
-                            if (code[i] === '}') {
-                                braceCount--;
-                                if (braceCount === 0) {
-                                    classEndIndex = i;
-                                    break;
-                                }
-                            }
-                        }
-                        if (classEndIndex > classStartIndex) {
-                            userCodeSnippet = code.substring(classStartIndex, classEndIndex).trim();
-                        }
-                    }
-                }
-            }
-            
-            if (!userCodeSnippet || userCodeSnippet.trim() === '') {
-                userCodeSnippet = code;
-            }
-            
-            // 生成 wrappedCode
-            let wrappedCode: string;
-            
-            if (isCompleteClass) {
-                wrappedCode = userCodeSnippet;
-            } else if (testCases && testCases.length > 0) {
-                // 测试用例模式包装
-                wrappedCode = `using System;
-using System.Diagnostics;
-using System.IO;
-
-class Program
-{
-    static void Main()
-    {
-        var sw = Stopwatch.StartNew();
-        long memoryBefore = GC.GetTotalMemory(false);
-        
-        try
-        {
-            // ========== 用户代码开始 ==========
-${userCodeSnippet}
-            // ========== 用户代码结束 ==========
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine("EXCEPTION: " + ex.ToString());
-        }
-        finally
-        {
-            sw.Stop();
-            long memoryAfter = GC.GetTotalMemory(false);
-            long memoryUsed = Math.Max(0, memoryAfter - memoryBefore);
-            Console.WriteLine("\\n===SMARTCODER_PERF_START===");
-            Console.WriteLine($"RUNTIME_MS:{sw.ElapsedMilliseconds}");
-            Console.WriteLine($"MEMORY_BYTES:{memoryUsed}");
-            Console.WriteLine("===SMARTCODER_PERF_END===");
-        }
-    }
-}`;
-            } else {
-                // 普通运行模式包装
-                wrappedCode = `using System;
-using System.Diagnostics;
-
-class Program
-{
-    static void Main()
-    {
-        var sw = Stopwatch.StartNew();
-        long memoryBefore = GC.GetTotalMemory(false);
-        
-        try
-        {
-            // ========== 用户代码开始 ==========
-${userCodeSnippet}
-            // ========== 用户代码结束 ==========
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine("EXCEPTION: " + ex.ToString());
-        }
-        finally
-        {
-            sw.Stop();
-            long memoryAfter = GC.GetTotalMemory(false);
-            long memoryUsed = Math.Max(0, memoryAfter - memoryBefore);
-            Console.WriteLine("\\n===SMARTCODER_PERF_START===");
-            Console.WriteLine($"RUNTIME_MS:{sw.ElapsedMilliseconds}");
-            Console.WriteLine($"MEMORY_BYTES:{memoryUsed}");
-            Console.WriteLine("===SMARTCODER_PERF_END===");
-        }
-    }
-}`;
-            }
-
             // 4. 写入 Program.cs
             fs.writeFileSync(path.join(projectDir, 'Program.cs'), wrappedCode, 'utf8');
 
