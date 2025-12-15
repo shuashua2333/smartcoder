@@ -327,20 +327,43 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     // 辅助方法：在完整文件的 Main 方法中注入性能监控代码
-    private _injectPerformanceMonitoring(code: string, mainMatch: RegExpMatchArray): string {
-        const mainStartIndex = mainMatch.index!;
-        const mainSignatureEnd = mainStartIndex + mainMatch[0].length;
-        
-        // 找到 Main 方法体的开始位置（第一个 { 之后）
-        const openingBraceIndex = mainSignatureEnd - 1; // mainMatch[0] 已经包含了 {
-        
-        // 找到匹配的右大括号（Main 方法结束）
+private _injectPerformanceMonitoring(code: string, mainMatch: RegExpMatchArray): string {
+        // 1. 确保 System.Diagnostics 引用存在
+        let injectedCode = code;
+        let offset = 0; // 用于记录插入 using 导致的索引偏移
+
+        if (!injectedCode.includes('using System.Diagnostics;')) {
+            const usingMatch = injectedCode.match(/using\s+[^;]+;/);
+            const usingStatement = 'using System.Diagnostics;\n';
+            
+            if (usingMatch) {
+                const insertIndex = usingMatch.index! + usingMatch[0].length;
+                injectedCode = injectedCode.substring(0, insertIndex) + 
+                    '\n' + usingStatement + 
+                    injectedCode.substring(insertIndex);
+                // 如果插入点在 Main 之前，需要更新 offset
+                if (insertIndex < mainMatch.index!) {
+                    offset += usingStatement.length + 1; // +1 是因为有个 \n
+                }
+            } else {
+                injectedCode = usingStatement + injectedCode;
+                offset += usingStatement.length;
+            }
+        }
+
+        // 2. 重新定位 Main 方法（使用偏移量，避免重新正则扫描，更准确）
+        const mainStartIndex = mainMatch.index! + offset;
+        const mainSignatureStr = mainMatch[0]; // 原始匹配的签名字符串
+        const mainSignatureEnd = mainStartIndex + mainSignatureStr.length;
+
+        // 3. 找到 Main 方法体的结束位置 '}'
+        // 注意：mainMatch[0] 包含了 '{'，所以我们要从它后面开始找
         let braceCount = 1;
-        let mainEndIndex = openingBraceIndex + 1;
-        
-        for (let i = openingBraceIndex + 1; i < code.length; i++) {
-            if (code[i] === '{') braceCount++;
-            if (code[i] === '}') {
+        let mainEndIndex = -1;
+
+        for (let i = mainSignatureEnd; i < injectedCode.length; i++) {
+            if (injectedCode[i] === '{') braceCount++;
+            if (injectedCode[i] === '}') {
                 braceCount--;
                 if (braceCount === 0) {
                     mainEndIndex = i;
@@ -348,117 +371,75 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
                 }
             }
         }
-        
-        // 提取 Main 方法内部的原始代码
-        const mainBody = code.substring(mainSignatureEnd, mainEndIndex).trim();
-        
-        // 检查是否已经包含性能监控代码（避免重复注入）
+
+        if (mainEndIndex === -1) return code; // 没找到匹配的括号，防御性返回
+
+        // 4. 提取原始代码体
+        const mainBody = injectedCode.substring(mainSignatureEnd, mainEndIndex);
+
+        // 防御性检查：避免重复注入
         if (mainBody.includes('Stopwatch') || mainBody.includes('SMARTCODER_PERF_START')) {
-            return code; // 已经注入过，直接返回
+            return code;
         }
+
+        // 5. 智能计算缩进
+        // 尝试获取 Main 方法第一行代码的缩进作为 baseIndent
+        const bodyLines = mainBody.split('\n');
+        let baseIndent = '        '; // 默认 8 空格兜底
         
-        // 确保必要的 using 语句存在
-        let injectedCode = code;
-        if (!injectedCode.includes('using System.Diagnostics;')) {
-            // 在第一个 using 语句后添加，如果没有 using 语句则在文件开头添加
-            const usingMatch = injectedCode.match(/using\s+[^;]+;/);
-            if (usingMatch) {
-                const insertIndex = usingMatch.index! + usingMatch[0].length;
-                injectedCode = injectedCode.substring(0, insertIndex) + 
-                    '\nusing System.Diagnostics;' + 
-                    injectedCode.substring(insertIndex);
-            } else {
-                injectedCode = 'using System.Diagnostics;\n' + injectedCode;
-            }
-        }
-        
-        // 重新计算索引（因为可能添加了 using 语句）
-        const newMainMatch = injectedCode.match(/static\s+(void|int)\s+Main\s*\([^)]*\)\s*\{/i);
-        if (!newMainMatch) {
-            return code; // 如果找不到 Main 方法，返回原始代码
-        }
-        
-        const newMainStartIndex = newMainMatch.index!;
-        const newMainSignatureEnd = newMainStartIndex + newMainMatch[0].length;
-        
-        // 重新找到 Main 方法体的结束位置
-        braceCount = 1;
-        let newMainEndIndex = newMainSignatureEnd - 1;
-        
-        for (let i = newMainSignatureEnd; i < injectedCode.length; i++) {
-            if (injectedCode[i] === '{') braceCount++;
-            if (injectedCode[i] === '}') {
-                braceCount--;
-                if (braceCount === 0) {
-                    newMainEndIndex = i;
-                    break;
-                }
-            }
-        }
-        
-        const newMainBody = injectedCode.substring(newMainSignatureEnd, newMainEndIndex);
-        
-        // 检测原有代码的基础缩进（通常 Main 方法体有 8 个空格）
-        // 计算用户代码的第一行非空行的缩进，作为基准
-        const bodyLines = newMainBody.split('\n');
-        let baseIndent = '        '; // 默认 8 个空格
+        // 查找第一行非空行来确定基准缩进
         for (const line of bodyLines) {
-            if (line.trim()) {
-                const trimmed = line.trimStart();
-                const indent = line.length - trimmed.length;
-                if (indent > 0) {
-                    baseIndent = ' '.repeat(indent);
+            if (line.trim().length > 0) {
+                const match = line.match(/^(\s*)/);
+                if (match) {
+                    baseIndent = match[1];
                     break;
                 }
             }
         }
-        
-        // try 块内部的缩进（比基础缩进多 4 个空格）
-        const tryIndent = baseIndent + '    ';
-        
-        // 保持用户代码的原有缩进，如果为空则使用 tryIndent
-        const indentedBody = newMainBody.trim() === '' 
-            ? '' 
-            : newMainBody.split('\n').map(line => {
-                if (line.trim() === '') return line; // 保持空行
-                const trimmed = line.trimStart();
-                // 如果原有缩进小于基础缩进，添加 tryIndent；否则保持原样
-                const currentIndent = line.length - trimmed.length;
-                if (currentIndent < baseIndent.length) {
-                    return tryIndent + trimmed;
-                }
-                return line; // 保持原有缩进
-            }).join('\n');
-        
-        // 构建注入后的 Main 方法体
-        const injectedMainBody = `${baseIndent}var sw = Stopwatch.StartNew();
+
+        const indentUnit = '    '; // 标准 C# 4空格缩进
+        const wrapperIndent = baseIndent; // try/finally 这一层与原代码平级（因为原代码要缩进）
+        // 实际上 try 应该和 baseIndent 一样，内部代码需要 +indentUnit
+
+        // 6. 处理原始代码的缩进：每一行都增加一个缩进单位
+        // 这样可以完美保留用户原有的相对缩进格式
+        const indentedOriginalCode = bodyLines.map(line => {
+            if (line.trim().length === 0) return line; // 空行不处理
+            return indentUnit + line; // 统一加前缀
+        }).join('\n');
+
+        // 7. 构建新的 Main 方法体
+        // 注意：这里不需要手动加 Main 的闭合括号，因为我们在下面拼接时会保留原有的 closing brace
+        const newBodyContent = `
+${baseIndent}var sw = Stopwatch.StartNew();
 ${baseIndent}long memoryBefore = GC.GetTotalMemory(false);
-${baseIndent}
 ${baseIndent}try
 ${baseIndent}{
-${indentedBody}
+${indentedOriginalCode}
 ${baseIndent}}
 ${baseIndent}catch (Exception ex)
 ${baseIndent}{
-${baseIndent}    Console.Error.WriteLine("EXCEPTION: " + ex.ToString());
+${baseIndent}${indentUnit}Console.Error.WriteLine("EXCEPTION: " + ex.ToString());
 ${baseIndent}}
 ${baseIndent}finally
 ${baseIndent}{
-${baseIndent}    sw.Stop();
-${baseIndent}    long memoryAfter = GC.GetTotalMemory(false);
-${baseIndent}    long memoryUsed = Math.Max(0, memoryAfter - memoryBefore);
-${baseIndent}    
-${baseIndent}    // 输出性能数据（使用特殊标记，方便解析）
-${baseIndent}    Console.WriteLine("\\n===SMARTCODER_PERF_START===");
-${baseIndent}    Console.WriteLine($"RUNTIME_MS:{sw.ElapsedMilliseconds}");
-${baseIndent}    Console.WriteLine($"MEMORY_BYTES:{memoryUsed}");
-${baseIndent}    Console.WriteLine("===SMARTCODER_PERF_END===");
+${baseIndent}${indentUnit}sw.Stop();
+${baseIndent}${indentUnit}long memoryAfter = GC.GetTotalMemory(false);
+${baseIndent}${indentUnit}long memoryUsed = Math.Max(0, memoryAfter - memoryBefore);
+${baseIndent}${indentUnit}Console.WriteLine("\\n===SMARTCODER_PERF_START===");
+${baseIndent}${indentUnit}Console.WriteLine($"RUNTIME_MS:{sw.ElapsedMilliseconds}");
+${baseIndent}${indentUnit}Console.WriteLine($"MEMORY_BYTES:{memoryUsed}");
+${baseIndent}${indentUnit}Console.WriteLine("===SMARTCODER_PERF_END===");
 ${baseIndent}}`;
-        
-        // 替换 Main 方法体
-        return injectedCode.substring(0, newMainSignatureEnd) + 
-            '\n' + injectedMainBody + '\n' + 
-            injectedCode.substring(newMainEndIndex + 1);
+
+        // 8. 拼接最终代码
+        // substring(0, mainSignatureEnd): Main 签名 + '{'
+        // newBodyContent: 新的方法体内容
+        // substring(mainEndIndex): 从原 Main 的 '}' 开始保留，这样 Main 方法就闭合了
+        return injectedCode.substring(0, mainSignatureEnd) + 
+               newBodyContent + 
+               injectedCode.substring(mainEndIndex);
     }
 
     // 🔥 本地运行代码并获取性能数据（类似 LeetCode 评测）
