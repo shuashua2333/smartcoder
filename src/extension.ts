@@ -317,6 +317,141 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    // 辅助方法：在完整文件的 Main 方法中注入性能监控代码
+    private _injectPerformanceMonitoring(code: string, mainMatch: RegExpMatchArray): string {
+        const mainStartIndex = mainMatch.index!;
+        const mainSignatureEnd = mainStartIndex + mainMatch[0].length;
+        
+        // 找到 Main 方法体的开始位置（第一个 { 之后）
+        const openingBraceIndex = mainSignatureEnd - 1; // mainMatch[0] 已经包含了 {
+        
+        // 找到匹配的右大括号（Main 方法结束）
+        let braceCount = 1;
+        let mainEndIndex = openingBraceIndex + 1;
+        
+        for (let i = openingBraceIndex + 1; i < code.length; i++) {
+            if (code[i] === '{') braceCount++;
+            if (code[i] === '}') {
+                braceCount--;
+                if (braceCount === 0) {
+                    mainEndIndex = i;
+                    break;
+                }
+            }
+        }
+        
+        // 提取 Main 方法内部的原始代码
+        const mainBody = code.substring(mainSignatureEnd, mainEndIndex).trim();
+        
+        // 检查是否已经包含性能监控代码（避免重复注入）
+        if (mainBody.includes('Stopwatch') || mainBody.includes('SMARTCODER_PERF_START')) {
+            return code; // 已经注入过，直接返回
+        }
+        
+        // 确保必要的 using 语句存在
+        let injectedCode = code;
+        if (!injectedCode.includes('using System.Diagnostics;')) {
+            // 在第一个 using 语句后添加，如果没有 using 语句则在文件开头添加
+            const usingMatch = injectedCode.match(/using\s+[^;]+;/);
+            if (usingMatch) {
+                const insertIndex = usingMatch.index! + usingMatch[0].length;
+                injectedCode = injectedCode.substring(0, insertIndex) + 
+                    '\nusing System.Diagnostics;' + 
+                    injectedCode.substring(insertIndex);
+            } else {
+                injectedCode = 'using System.Diagnostics;\n' + injectedCode;
+            }
+        }
+        
+        // 重新计算索引（因为可能添加了 using 语句）
+        const newMainMatch = injectedCode.match(/static\s+(void|int)\s+Main\s*\([^)]*\)\s*\{/i);
+        if (!newMainMatch) {
+            return code; // 如果找不到 Main 方法，返回原始代码
+        }
+        
+        const newMainStartIndex = newMainMatch.index!;
+        const newMainSignatureEnd = newMainStartIndex + newMainMatch[0].length;
+        
+        // 重新找到 Main 方法体的结束位置
+        braceCount = 1;
+        let newMainEndIndex = newMainSignatureEnd - 1;
+        
+        for (let i = newMainSignatureEnd; i < injectedCode.length; i++) {
+            if (injectedCode[i] === '{') braceCount++;
+            if (injectedCode[i] === '}') {
+                braceCount--;
+                if (braceCount === 0) {
+                    newMainEndIndex = i;
+                    break;
+                }
+            }
+        }
+        
+        const newMainBody = injectedCode.substring(newMainSignatureEnd, newMainEndIndex);
+        
+        // 检测原有代码的基础缩进（通常 Main 方法体有 8 个空格）
+        // 计算用户代码的第一行非空行的缩进，作为基准
+        const bodyLines = newMainBody.split('\n');
+        let baseIndent = '        '; // 默认 8 个空格
+        for (const line of bodyLines) {
+            if (line.trim()) {
+                const trimmed = line.trimStart();
+                const indent = line.length - trimmed.length;
+                if (indent > 0) {
+                    baseIndent = ' '.repeat(indent);
+                    break;
+                }
+            }
+        }
+        
+        // try 块内部的缩进（比基础缩进多 4 个空格）
+        const tryIndent = baseIndent + '    ';
+        
+        // 保持用户代码的原有缩进，如果为空则使用 tryIndent
+        const indentedBody = newMainBody.trim() === '' 
+            ? '' 
+            : newMainBody.split('\n').map(line => {
+                if (line.trim() === '') return line; // 保持空行
+                const trimmed = line.trimStart();
+                // 如果原有缩进小于基础缩进，添加 tryIndent；否则保持原样
+                const currentIndent = line.length - trimmed.length;
+                if (currentIndent < baseIndent.length) {
+                    return tryIndent + trimmed;
+                }
+                return line; // 保持原有缩进
+            }).join('\n');
+        
+        // 构建注入后的 Main 方法体
+        const injectedMainBody = `${baseIndent}var sw = Stopwatch.StartNew();
+${baseIndent}long memoryBefore = GC.GetTotalMemory(false);
+${baseIndent}
+${baseIndent}try
+${baseIndent}{
+${indentedBody}
+${baseIndent}}
+${baseIndent}catch (Exception ex)
+${baseIndent}{
+${baseIndent}    Console.Error.WriteLine("EXCEPTION: " + ex.ToString());
+${baseIndent}}
+${baseIndent}finally
+${baseIndent}{
+${baseIndent}    sw.Stop();
+${baseIndent}    long memoryAfter = GC.GetTotalMemory(false);
+${baseIndent}    long memoryUsed = Math.Max(0, memoryAfter - memoryBefore);
+${baseIndent}    
+${baseIndent}    // 输出性能数据（使用特殊标记，方便解析）
+${baseIndent}    Console.WriteLine("\\n===SMARTCODER_PERF_START===");
+${baseIndent}    Console.WriteLine($"RUNTIME_MS:{sw.ElapsedMilliseconds}");
+${baseIndent}    Console.WriteLine($"MEMORY_BYTES:{memoryUsed}");
+${baseIndent}    Console.WriteLine("===SMARTCODER_PERF_END===");
+${baseIndent}}`;
+        
+        // 替换 Main 方法体
+        return injectedCode.substring(0, newMainSignatureEnd) + 
+            '\n' + injectedMainBody + '\n' + 
+            injectedCode.substring(newMainEndIndex + 1);
+    }
+
     // 🔥 本地运行代码并获取性能数据（类似 LeetCode 评测）
     // ✨ 新增：支持测试用例验证
     private async _runCodeLocally(code: string, testCases?: Array<{ input: string; expected: string }>): Promise<{ 
@@ -348,57 +483,49 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
 
             // 3. 智能提取用户代码并包装
             // 检测用户代码结构，判断是否需要特殊处理
-            let userCodeSnippet = code;
-            let isCompleteClass = false;
+            let wrappedCode: string;
             
-            // 检测是否包含 Main 方法
+            // 检测是否包含类定义和 Main 方法（完整文件模式）
+            const classRegex = /(public\s+|private\s+|internal\s+)?class\s+\w+/i;
+            const hasClass = classRegex.test(code);
             const mainMethodRegex = /static\s+(void|int)\s+Main\s*\([^)]*\)\s*\{/i;
             const mainMatch = code.match(mainMethodRegex);
             
-            if (mainMatch) {
-                // 如果包含 Main 方法，提取 Main 方法内部的代码
-                const mainStartIndex = mainMatch.index! + mainMatch[0].length;
+            // 完整文件模式：包含类定义和 Main 方法
+            if (hasClass && mainMatch) {
+                // 注入性能监控代码到现有的 Main 方法中
+                wrappedCode = this._injectPerformanceMonitoring(code, mainMatch);
+            } else {
+                // 片段模式：提取代码片段并包装在 Program 类中
+                let userCodeSnippet = code;
                 
-                // 找到匹配的右大括号（Main 方法结束）
-                let braceCount = 1;
-                let mainEndIndex = mainStartIndex;
-                
-                for (let i = mainStartIndex; i < code.length; i++) {
-                    if (code[i] === '{') braceCount++;
-                    if (code[i] === '}') {
-                        braceCount--;
-                        if (braceCount === 0) {
-                            mainEndIndex = i;
-                            break;
+                if (mainMatch) {
+                    // 如果包含 Main 方法但没有类定义，提取 Main 方法内部的代码
+                    const mainStartIndex = mainMatch.index! + mainMatch[0].length;
+                    
+                    // 找到匹配的右大括号（Main 方法结束）
+                    let braceCount = 1;
+                    let mainEndIndex = mainStartIndex;
+                    
+                    for (let i = mainStartIndex; i < code.length; i++) {
+                        if (code[i] === '{') braceCount++;
+                        if (code[i] === '}') {
+                            braceCount--;
+                            if (braceCount === 0) {
+                                mainEndIndex = i;
+                                break;
+                            }
                         }
                     }
-                }
-                
-                // 提取 Main 方法内部的代码
-                if (mainEndIndex > mainStartIndex) {
-                    userCodeSnippet = code.substring(mainStartIndex, mainEndIndex).trim();
-                }
-            } else {
-                // 检测是否包含完整的类定义（包含 public/private 等修饰符）
-                const completeClassRegex = /(public\s+|private\s+|internal\s+)?class\s+\w+/i;
-                const completeClassMatch = code.match(completeClassRegex);
-                
-                // 检测是否包含 using 语句（说明是完整的代码文件）
-                const hasUsingStatements = /using\s+/.test(code);
-                
-                // 检测是否包含方法定义（public/private 方法）
-                const hasMethodDefinition = /(public|private|internal|protected)\s+\w+\s+\w+\s*\(/i.test(code);
-                
-                // 如果包含完整的类定义且（有 using 语句或有方法定义），说明是完整的代码文件
-                // 不应该提取类内部的代码，而应该保留整个类定义
-                if (completeClassMatch && (hasUsingStatements || hasMethodDefinition || code.includes('public class') || code.includes('class Solution'))) {
-                    isCompleteClass = true;
-                    // 对于完整的类定义，直接使用原始代码，不提取
-                    userCodeSnippet = code;
+                    
+                    // 提取 Main 方法内部的代码
+                    if (mainEndIndex > mainStartIndex) {
+                        userCodeSnippet = code.substring(mainStartIndex, mainEndIndex).trim();
+                    }
                 } else {
                     // 检测是否包含简单的类定义（可能是部分代码）
-                    const classRegex = /class\s+\w+\s*\{/i;
-                    const classMatch = code.match(classRegex);
+                    const simpleClassRegex = /class\s+\w+\s*\{/i;
+                    const classMatch = code.match(simpleClassRegex);
                     
                     if (classMatch) {
                         // 如果包含类定义，提取类内部的代码
@@ -425,33 +552,14 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
                         }
                     }
                 }
-            }
-            
-            // 如果提取的代码为空，使用原始代码
-            if (!userCodeSnippet || userCodeSnippet.trim() === '') {
-                userCodeSnippet = code;
-            }
-            
-            // ✨ 如果有测试用例，需要修改代码以支持输入注入
-            // 否则使用原来的包装方式
-            let wrappedCode: string;
-            
-            // 如果检测到是完整的类定义，直接使用原始代码（不包装）
-            if (isCompleteClass) {
-                // 完整类定义模式：直接使用原始代码
-                // 如果代码中没有 Main 方法，需要添加一个简单的 Main 方法用于测试
-                const hasMainMethod = /static\s+(void|int)\s+Main\s*\(/i.test(userCodeSnippet);
                 
-                if (hasMainMethod) {
-                    // 如果已经有 Main 方法，直接使用
-                    wrappedCode = userCodeSnippet;
-                } else {
-                    // 如果没有 Main 方法，直接使用原始代码（可能是类定义，需要外部调用）
-                    // 这种情况下，代码应该可以编译，但无法直接运行
-                    // 为了兼容，我们直接使用原始代码
-                    wrappedCode = userCodeSnippet;
+                // 如果提取的代码为空，使用原始代码
+                if (!userCodeSnippet || userCodeSnippet.trim() === '') {
+                    userCodeSnippet = code;
                 }
-            } else if (testCases && testCases.length > 0) {
+                
+                // 包装代码片段
+                if (testCases && testCases.length > 0) {
                 // 测试用例模式：需要支持从标准输入读取
                 // 注意：这里我们使用 Console.ReadLine() 来模拟输入
                 // 实际运行时，我们会通过 stdin 注入输入
@@ -708,7 +816,7 @@ ${userCodeSnippet}
                     status: (runtime >= 0 && memory >= 0) ? 'Accepted' : 'Runtime Error'
                 };
             }
-
+        }
         } catch (error: any) {
             // 如果运行失败，返回详细的错误信息
             let errorOutput = '';
@@ -746,6 +854,7 @@ ${userCodeSnippet}
                 console.error('清理临时目录失败:', cleanupError);
             }
         }
+        return null;
     }
 
     // 🔥 发送代码给后端 Server（已添加性能评测）
