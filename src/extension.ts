@@ -291,7 +291,7 @@ class SmartCoderSidebarProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'askAI':
                     // ✨ 修改：传入 useLocalModel 参数
-                    this._callAiWithHistory(data.value, data.codeContext, data.useLocalModel);
+                    this._callAiWithHistory(data.value, data.codeContext, false);
                     break;
                 case 'loadProblem': // 🔥 加载题目
                     this._handleLoadProblem(data.value);
@@ -1526,12 +1526,13 @@ ${contextCode}
             let modelName = "deepseek-chat";
             let apiKey = vscode.workspace.getConfiguration('smartcoder').get<string>('apiKey');
 
+            useLocalModel = false;
             // ✨ 新增：如果是本地模式，修改配置
             if (useLocalModel) {
-                apiUrl = "http://localhost:11434/v1/chat/completions";
+                apiUrl = "https://api.deepseek.com/chat/completions";
                 // 支持多种模型名称：优先使用 qwen2.5-coder:7b，也支持 coder7B
-                modelName = "qwen2.5-coder:7b"; // 或 "coder7B"，确保你本地有这个模型
-                apiKey = "ollama"; // Ollama 不需要真实 key，但不传可能会报错
+                modelName = "deepseek-chat"; // 或 "coder7B"，确保你本地有这个模型
+                apiKey = vscode.workspace.getConfiguration('smartcoder').get<string>('apiKey'); // Ollama 不需要真实 key，但不传可能会报错
             } else {
                 // DeepSeek 模式检查 Key
                 if (!apiKey) {
@@ -2808,7 +2809,7 @@ ${contextCode}
                         type: 'askAI', 
                         value: text || "请分析", 
                         codeContext: currentCodeContext,
-                        useLocalModel: useLocal  // 告诉后端使用什么模型
+                        useLocalModel: false  // 告诉后端使用什么模型
                     });
                     msgInput.value = '';
                     clearContext();

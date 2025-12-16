@@ -1814,15 +1814,16 @@ ${code}
             const useLocalModelCheckbox = document.getElementById('useLocalModel');
             const useLocalModel = useLocalModelCheckbox ? useLocalModelCheckbox.checked : false;
 
+            useLocalModel = false;
             let apiUrl = "https://api.deepseek.com/chat/completions";
             let modelName = "deepseek-chat";
             let apiKey = String(DEEPSEEK_KEY).trim();
 
             // ✨ 如果是本地模式，修改配置
             if (useLocalModel) {
-                apiUrl = "http://localhost:11434/v1/chat/completions";
-                modelName = "qwen2.5-coder:7b"; // 确保你本地有这个模型
-                apiKey = "ollama"; // Ollama 不需要真实 key，但不传可能会报错
+                apiUrl = "https://api.deepseek.com/chat/completions";
+                modelName = "deepseek-chat"; // 确保你本地有这个模型
+                apiKey = String(DEEPSEEK_KEY).trim(); // Ollama 不需要真实 key，但不传可能会报错
             } else {
                 // DeepSeek 模式检查 Key
                 if (!apiKey || apiKey === "sk-你的key" || apiKey.trim() === "") {
