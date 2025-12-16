@@ -1522,18 +1522,13 @@ ${contextCode}
         // (简单起见，我们假设前端已经 handle 了 loading，或者重复发也没事)
         
         try {
-            let apiUrl = "https://api.deepseek.com/chat/completions";
-            let modelName = "deepseek-chat";
-            let apiKey = vscode.workspace.getConfiguration('smartcoder').get<string>('apiKey');
+            const apiUrl = "https://api.deepseek.com/chat/completions";
+            const modelName = "deepseek-chat";
+            const apiKey = vscode.workspace.getConfiguration('smartcoder').get<string>('apiKey');
 
             useLocalModel = false;
             // ✨ 新增：如果是本地模式，修改配置
-            if (useLocalModel) {
-                apiUrl = "https://api.deepseek.com/chat/completions";
-                // 支持多种模型名称：优先使用 qwen2.5-coder:7b，也支持 coder7B
-                modelName = "deepseek-chat"; // 或 "coder7B"，确保你本地有这个模型
-                apiKey = vscode.workspace.getConfiguration('smartcoder').get<string>('apiKey'); // Ollama 不需要真实 key，但不传可能会报错
-            } else {
+
                 // DeepSeek 模式检查 Key
                 if (!apiKey) {
                     this._view.webview.postMessage({ 
@@ -1542,7 +1537,7 @@ ${contextCode}
                     });
                     return;
                 }
-            }
+            
 
             // 根据不同的上下文模式使用不同的系统提示词
             let systemPrompt = `你是一个 C# 竞赛编程专家。
